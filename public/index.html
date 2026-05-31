@@ -119,15 +119,16 @@
 
       <div id="chat-input-area">
         <!-- Anexo -->
-        <input id="file-input" type="file" accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx" style="display:none" onchange="onFileSelected(this)" />
+        <input id="file-input" type="file" accept="image/*,video/*,application/pdf,.doc,.docx,.xls,.xlsx" style="display:none" onchange="onFileSelected(this)" />
         <button class="btn-attach" title="Anexar arquivo" onclick="document.getElementById('file-input').click()">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
         </button>
         <!-- Texto -->
         <textarea id="msg-input" placeholder="Digite uma mensagem…" rows="1"
           onkeydown="onMsgKeydown(event)" oninput="autoResize(this)"></textarea>
-        <!-- Microfone / Enviar -->
+        <!-- Microfone / Enviar — TEMPORARIAMENTE OCULTO até resolver formato de áudio -->
         <button id="mic-btn" class="btn-mic" title="Segurar para gravar áudio"
+          style="display:none"
           onmousedown="startRecording()" onmouseup="stopRecording()"
           ontouchstart="startRecording(event)" ontouchend="stopRecording()">
           <svg id="mic-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
