@@ -167,17 +167,26 @@ async function addSession() {
   input.value = ''
   closeAddModal()
 
-  const res  = await fetch('/api/sessions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
-    body: JSON.stringify({ name, tenant_id }),
-  })
-  const sess = await res.json()
-  state.sessions.push(sess)
-  renderSessions()
+  try {
+    const res = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
+      body: JSON.stringify({ name, tenant_id }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `Erro ${res.status}` }))
+      showToast('Erro ao conectar: ' + (err.error || res.status), 'error')
+      return
+    }
+    const sess = await res.json()
+    state.sessions.push(sess)
+    renderSessions()
 
-  document.getElementById('qr-session-label').textContent = `Número: ${name}`
-  document.getElementById('modal-qr').classList.remove('hidden')
+    document.getElementById('qr-session-label').textContent = `Número: ${name}`
+    document.getElementById('modal-qr').classList.remove('hidden')
+  } catch (e) {
+    showToast('Erro de conexão: ' + e.message, 'error')
+  }
 }
 
 async function removeSession(id) {
