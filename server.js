@@ -15,8 +15,7 @@ import { PORT, SECRET, ORIGIN, IS_PROD, MEDIA_DIR } from './config.js'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 if (IS_PROD && !SECRET) {
-  console.error('ERRO: CRC_SECRET não definido. Configure o .env antes de rodar em produção.')
-  process.exit(1)
+  console.warn('AVISO: CRC_SECRET não definido — API rodando sem autenticação!')
 }
 
 const app        = express()
