@@ -10,7 +10,7 @@
     "dev": "node --watch server.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "@whiskeysockets/baileys": "6.17.16",
     "audio-decode": "^2.2.3",
     "dotenv": "^17.4.2",
     "express": "^4.21.2",
