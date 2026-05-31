@@ -4,6 +4,7 @@
   "type": "module",
   "description": "Central de Relacionamento com o Cliente — Green Lab",
   "main": "server.js",
+  "engines": { "node": ">=24.0.0" },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js"
