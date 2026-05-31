@@ -247,6 +247,20 @@ app.post('/api/conversations/:jid/media', upload.single('file'), async (req, res
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
 
+// Diagnóstico de persistência (sem auth, só leitura de metadados)
+app.get('/debug-storage', (_req, res) => {
+  const dataDir  = process.env.DATA_DIR || '(não definido)'
+  let sessionDirs = []
+  let dbExists = false
+  try {
+    const sessPath = path.join(process.env.DATA_DIR || __dirname, 'sessions')
+    sessionDirs = fs.existsSync(sessPath) ? fs.readdirSync(sessPath) : []
+    dbExists = fs.existsSync(path.join(process.env.DATA_DIR || __dirname, 'crc.db'))
+  } catch (e) { /* ignore */ }
+  const sessionsInDb = db.prepare('SELECT COUNT(*) as n FROM sessions').get().n
+  res.json({ DATA_DIR: dataDir, dbExists, sessionsNoBanco: sessionsInDb, pastasDeSessao: sessionDirs })
+})
+
 app.get('*', (_req, res) => {
   // Injeta o secret na meta tag para autenticação do frontend
   const html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8')
