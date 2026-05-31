@@ -215,6 +215,7 @@ app.post('/api/conversations/:jid/messages', async (req, res) => {
     await sm.sendMessage(session_id, req.params.jid, body.trim())
     res.json({ ok: true })
   } catch (e) {
+    console.error('[sendMessage] ERRO:', e.message, '| jid:', req.params.jid, '| session:', session_id, '\n', e.stack)
     res.status(500).json({ error: e.message })
   }
 })

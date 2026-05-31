@@ -400,9 +400,12 @@ async function sendMessage() {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
       body: JSON.stringify({ body: text, session_id: conv.session_id }),
     })
-    if (!res.ok) { const e = await res.json(); alert('Erro: ' + e.error) }
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}))
+      showToast(`Erro ${res.status}: ${e.error || 'falha ao enviar'}`, 'error')
+    }
   } catch (e) {
-    alert('Erro de conexão: ' + e.message)
+    showToast('Erro de conexão: ' + e.message, 'error')
   } finally {
     btn.disabled = false
     input.focus()
