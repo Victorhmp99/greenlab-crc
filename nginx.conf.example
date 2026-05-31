@@ -1,0 +1,25 @@
+server {
+    listen 80;
+    server_name crc.seudominio.com.br;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name crc.seudominio.com.br;
+
+    ssl_certificate     /etc/letsencrypt/live/crc.seudominio.com.br/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/crc.seudominio.com.br/privkey.pem;
+
+    client_max_body_size 64M;
+
+    location / {
+        proxy_pass         http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host $host;
+        proxy_cache_bypass $http_upgrade;
+        proxy_read_timeout 86400;
+    }
+}

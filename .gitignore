@@ -1,0 +1,7 @@
+node_modules/
+sessions/
+media/
+crc.db
+.env
+*.log
+logs/

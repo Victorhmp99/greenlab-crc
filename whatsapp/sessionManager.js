@@ -1,0 +1,426 @@
+import {
+  makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
+  downloadMediaMessage,
+} from '@whiskeysockets/baileys'
+import qrcode from 'qrcode'
+import pino from 'pino'
+import path from 'path'
+import fs from 'fs'
+import { spawnSync } from 'child_process'
+import os from 'os'
+import { createRequire } from 'module'
+
+const _require   = createRequire(import.meta.url)
+const ffmpegPath = _require('ffmpeg-static')
+
+// Converte via arquivos temporários — evita problemas de pipe no Windows
+function runFfmpeg(inputBuffer, outExt, ffArgs, label) {
+  const id     = `${Date.now()}_${Math.random().toString(36).slice(2)}`
+  const tmpIn  = path.join(os.tmpdir(), `crc_in_${id}`)
+  const tmpOut = path.join(os.tmpdir(), `crc_out_${id}.${outExt}`)
+
+  try {
+    fs.writeFileSync(tmpIn, inputBuffer)
+
+    const result = spawnSync(ffmpegPath, ['-y', '-i', tmpIn, ...ffArgs, tmpOut], {
+      timeout:   60_000,
+      maxBuffer: 100 * 1024 * 1024,
+    })
+
+    const errLog = result.stderr?.toString().trim()
+    if (errLog) console.log(`[${label}]`, errLog.split('\n').slice(-2).join(' '))
+
+    if (result.status !== 0) throw new Error(`ffmpeg exit ${result.status}`)
+
+    const out = fs.readFileSync(tmpOut)
+    if (out.length < 200) throw new Error(`saída muito pequena: ${out.length}B`)
+    console.log(`[${label}] ok — ${out.length}B`)
+    return out
+  } finally {
+    try { fs.unlinkSync(tmpIn)  } catch (_) {}
+    try { fs.unlinkSync(tmpOut) } catch (_) {}
+  }
+}
+
+// Wrappers async para não bloquear o event loop do Node durante conversão
+function convertToOggOpus(buffer) {
+  return new Promise((resolve, reject) => {
+    setImmediate(() => {
+      try { resolve(runFfmpeg(buffer, 'ogg', [
+        '-vn', '-c:a', 'libopus', '-b:a', '64k',
+        '-ar', '48000', '-ac', '1', '-application', 'voip',
+      ], 'ffmpeg/ogg')) }
+      catch (e) { reject(e) }
+    })
+  })
+}
+
+function convertToMp4Aac(buffer) {
+  return new Promise((resolve, reject) => {
+    setImmediate(() => {
+      try { resolve(runFfmpeg(buffer, 'm4a', [
+        '-vn', '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '1',
+      ], 'ffmpeg/m4a')) }
+      catch (e) { reject(e) }
+    })
+  })
+}
+
+import { SESSIONS_DIR, MEDIA_DIR } from '../config.js'
+
+const logger = pino({ level: 'silent' })
+
+/* ── Helpers ─────────────────────────────────────────── */
+
+const EXT_MAP = {
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif',
+  'video/mp4': 'mp4', 'video/3gpp': '3gp',
+  'audio/ogg; codecs=opus': 'ogg', 'audio/ogg': 'ogg',
+  'audio/mp4': 'm4a', 'audio/mpeg': 'mp3', 'audio/webm': 'webm',
+  'application/pdf': 'pdf',
+}
+function getExt(mime = '') {
+  if (EXT_MAP[mime]) return EXT_MAP[mime]
+  const base = mime.split(';')[0].split('/')[1]
+  return base || 'bin'
+}
+
+function extractBody(msg) {
+  const m = msg.message
+  if (!m) return null
+  if (m.conversation)             return m.conversation
+  if (m.extendedTextMessage?.text)return m.extendedTextMessage.text
+  if (m.imageMessage)             return m.imageMessage.caption || '[Imagem]'
+  if (m.videoMessage)             return m.videoMessage.caption || '[Vídeo]'
+  if (m.audioMessage)             return '[Áudio]'
+  if (m.stickerMessage)           return '[Figurinha]'
+  if (m.documentMessage)          return m.documentMessage.fileName || '[Documento]'
+  if (m.locationMessage)          return '[Localização]'
+  if (m.contactMessage)           return `[Contato: ${m.contactMessage.displayName}]`
+  if (m.reactionMessage)          return null
+  return null
+}
+
+function detectMediaType(msg) {
+  const m = msg.message
+  if (!m) return null
+  if (m.imageMessage)    return { type: 'image',    mime: m.imageMessage.mimetype }
+  if (m.videoMessage)    return { type: 'video',    mime: m.videoMessage.mimetype }
+  if (m.audioMessage)    return { type: 'audio',    mime: m.audioMessage.mimetype || 'audio/ogg; codecs=opus' }
+  if (m.stickerMessage)  return { type: 'sticker',  mime: m.stickerMessage.mimetype }
+  if (m.documentMessage) return { type: 'document', mime: m.documentMessage.mimetype }
+  return null
+}
+
+/* ── SessionManager ──────────────────────────────────── */
+
+export class SessionManager {
+  constructor(db, io) {
+    this.db     = db
+    this.io     = io
+    this.sockets = new Map()
+    this.timers  = new Map()
+  }
+
+  /* ── Restore ── */
+  async restoreAll() {
+    for (const s of this.db.prepare('SELECT * FROM sessions').all()) {
+      if (fs.existsSync(path.join(SESSIONS_DIR, s.id))) {
+        this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(s.id)
+        await this.connect(s.id, s.name)
+      } else {
+        this.db.prepare("UPDATE sessions SET status='disconnected' WHERE id=?").run(s.id)
+      }
+    }
+  }
+
+  /* ── Connect ── */
+  async connect(sessionId, name) {
+    const dir = path.join(SESSIONS_DIR, sessionId)
+    fs.mkdirSync(dir, { recursive: true })
+
+    const { state, saveCreds } = await useMultiFileAuthState(dir)
+    const { version }          = await fetchLatestBaileysVersion()
+
+    const sock = makeWASocket({
+      version,
+      auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
+      printQRInTerminal: false,
+      logger,
+      browser: ['CRC Green Lab', 'Chrome', '120.0.0'],
+      generateHighQualityLinkPreview: false,
+      syncFullHistory: false,
+    })
+
+    this.sockets.set(sessionId, sock)
+    sock.ev.on('creds.update', saveCreds)
+
+    sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+      if (qr) {
+        const img = await qrcode.toDataURL(qr)
+        this.io.emit('qr', { sessionId, qr: img })
+        this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
+        this.io.emit('session:update', { sessionId, status: 'connecting' })
+      }
+      if (connection === 'open') {
+        const phone = '+' + (sock.user?.id?.split(':')[0] || '')
+        this.db.prepare('UPDATE sessions SET status=?,phone=? WHERE id=?').run('connected', phone, sessionId)
+        this.io.emit('session:update', { sessionId, status: 'connected', phone })
+        console.log(`✅ [${name}] Conectado: ${phone}`)
+      }
+      if (connection === 'close') {
+        const code  = lastDisconnect?.error?.output?.statusCode
+        const retry = code !== DisconnectReason.loggedOut
+        this.sockets.delete(sessionId)
+        if (retry) {
+          this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
+          this.io.emit('session:update', { sessionId, status: 'connecting' })
+          this.timers.set(sessionId, setTimeout(() => this.connect(sessionId, name), 4000))
+        } else {
+          this.db.prepare("UPDATE sessions SET status='disconnected' WHERE id=?").run(sessionId)
+          this.io.emit('session:update', { sessionId, status: 'disconnected' })
+        }
+      }
+    })
+
+    sock.ev.on('messages.upsert', ({ messages, type }) => {
+      if (type !== 'notify') return
+      for (const msg of messages) {
+        const jid = msg.key.remoteJid
+        if (!jid || jid === 'status@broadcast' || jid.endsWith('@g.us')) continue
+        // Chama sem await — nunca bloqueia o loop de eventos
+        this._handleMessage(sessionId, msg, sock).catch(e =>
+          console.error('[msg] erro no handler:', e.message)
+        )
+      }
+    })
+
+    sock.ev.on('contacts.upsert', contacts => {
+      for (const c of contacts) {
+        if (c.name && c.id)
+          this.db.prepare('UPDATE conversations SET name=? WHERE id=? AND name=phone').run(c.name, c.id)
+      }
+    })
+
+    return sock
+  }
+
+  /* ── Handle incoming message ── */
+  async _handleMessage(sessionId, msg, sock) {
+    const jid    = msg.key.remoteJid
+    const body   = extractBody(msg)
+    if (!body) return
+
+    const fromMe = !!msg.key.fromMe
+    const ts     = new Date((msg.messageTimestamp || Math.floor(Date.now() / 1000)) * 1000).toISOString()
+    const msgId  = msg.key.id
+    const name   = msg.pushName || jid.split('@')[0]
+    const phone  = jid.split('@')[0]
+    const media  = detectMediaType(msg)
+
+    // 1. Salva/atualiza conversa imediatamente
+    const exists = this.db.prepare('SELECT id FROM conversations WHERE id=? AND session_id=?').get(jid, sessionId)
+    if (exists) {
+      this.db.prepare(`
+        UPDATE conversations SET last_message=?,last_message_at=?,unread_count=unread_count+?
+        WHERE id=? AND session_id=?
+      `).run(body, ts, fromMe ? 0 : 1, jid, sessionId)
+    } else {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO conversations(id,session_id,name,phone,last_message,last_message_at,unread_count)
+        VALUES(?,?,?,?,?,?,?)
+      `).run(jid, sessionId, name, phone, body, ts, fromMe ? 0 : 1)
+    }
+
+    // 2. Salva mensagem imediatamente (sem media_url ainda)
+    try {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO messages(id,conversation_id,session_id,from_me,body,media_type,timestamp)
+        VALUES(?,?,?,?,?,?,?)
+      `).run(msgId, jid, sessionId, fromMe ? 1 : 0, body, media?.type ?? null, ts)
+    } catch (_) { /* duplicata */ }
+
+    // 3. Emite para o frontend AGORA — UI não trava
+    const conversation = this._getConversation(jid, sessionId)
+    this.io.emit('message:new', {
+      conversation,
+      message: { id: msgId, conversation_id: jid, session_id: sessionId,
+                 from_me: fromMe ? 1 : 0, body, media_type: media?.type ?? null,
+                 media_url: null, timestamp: ts },
+    })
+
+    // 4. Baixa mídia em background — não bloqueia nada
+    if (media) {
+      this._downloadMediaBg(msg, sessionId, msgId, jid, media, sock)
+    }
+  }
+
+  /* ── Download de mídia em background ── */
+  async _downloadMediaBg(msg, sessionId, msgId, jid, media, sock) {
+    try {
+      const dir = path.join(MEDIA_DIR, sessionId)
+      fs.mkdirSync(dir, { recursive: true })
+
+      // Timeout de 45s para não ficar preso
+      const buffer = await Promise.race([
+        downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 45_000)),
+      ])
+
+      const filename = `${msgId}.${getExt(media.mime)}`
+      fs.writeFileSync(path.join(dir, filename), buffer)
+      const mediaUrl = `/media/${sessionId}/${filename}`
+
+      // Atualiza DB
+      this.db.prepare('UPDATE messages SET media_url=? WHERE id=? AND session_id=?')
+        .run(mediaUrl, msgId, sessionId)
+
+      // Notifica o frontend para atualizar o balão específico
+      this.io.emit('message:media', { msgId, sessionId, convId: jid, mediaType: media.type, mediaUrl })
+    } catch (e) {
+      console.error(`[media] download falhou (${msgId}):`, e.message)
+    }
+  }
+
+  /* ── Enviar texto ── */
+  async sendMessage(sessionId, jid, text) {
+    const sock = this._requireSock(sessionId)
+    const result = await sock.sendMessage(jid, { text })
+
+    const msgId = result?.key?.id || `out_${Date.now()}`
+    const ts    = new Date().toISOString()
+
+    try {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO messages(id,conversation_id,session_id,from_me,body,timestamp)
+        VALUES(?,?,?,1,?,?)
+      `).run(msgId, jid, sessionId, text, ts)
+      this.db.prepare('UPDATE conversations SET last_message=?,last_message_at=? WHERE id=? AND session_id=?')
+        .run(text, ts, jid, sessionId)
+    } catch (_) {}
+
+    const conversation = this._getConversation(jid, sessionId)
+    this.io.emit('message:new', {
+      conversation,
+      message: { id: msgId, conversation_id: jid, session_id: sessionId,
+                 from_me: 1, body: text, media_type: null, media_url: null, timestamp: ts },
+    })
+    return result
+  }
+
+  /* ── Enviar mídia ── */
+  async sendMedia(sessionId, jid, file, caption = '') {
+    const sock = this._requireSock(sessionId)
+    const { buffer, originalname } = file
+    // Usa o mimetype real do arquivo — sem forçar OGG quando é WebM
+    const mime = file.mimetype
+
+    let msgContent, mediaType, body
+
+    if (mime.startsWith('image/')) {
+      msgContent = { image: buffer, caption, mimetype: mime }
+      mediaType  = 'image'
+      body       = caption || '[Imagem]'
+    } else if (mime.startsWith('video/')) {
+      msgContent = { video: buffer, caption, mimetype: mime }
+      mediaType  = 'video'
+      body       = caption || '[Vídeo]'
+    } else if (mime.startsWith('audio/')) {
+      mediaType = 'audio'
+      body      = '[Áudio 🎵]'
+      try {
+        const oggBuffer = await convertToOggOpus(buffer)
+        console.log(`[audio] OGG convertido — ${oggBuffer.length}B — jid: ${jid}`)
+        // ptt:false para testar se o upload funciona sem o pipeline PTT
+        msgContent = { audio: oggBuffer, mimetype: 'audio/ogg; codecs=opus', ptt: false }
+      } catch (e1) {
+        console.warn('[audio] conversão OGG falhou:', e1.message)
+        msgContent = { document: buffer, mimetype: mime, fileName: originalname || `audio.${getExt(mime)}` }
+      }
+    } else {
+      msgContent = { document: buffer, mimetype: mime, fileName: originalname }
+      mediaType  = 'document'
+      body       = originalname || '[Documento]'
+    }
+
+    let result
+    try {
+      console.log('[sendMedia] enviando via Baileys — tipo:', Object.keys(msgContent)[0], '| ptt:', msgContent.ptt ?? 'n/a', '| jid:', jid)
+      result = await sock.sendMessage(jid, msgContent)
+      console.log('[sendMedia] ok — msgId:', result?.key?.id)
+    } catch (sendErr) {
+      console.error('[sendMedia] ERRO sock.sendMessage:', sendErr.message, sendErr.stack?.split('\n')[1])
+      // Fallback: documento
+      const fallback = { document: buffer, mimetype: mime, fileName: originalname || `arquivo.${getExt(mime)}` }
+      console.log('[sendMedia] tentando fallback documento...')
+      result = await sock.sendMessage(jid, fallback)
+      console.log('[sendMedia] fallback ok — msgId:', result?.key?.id)
+    }
+    const msgId  = result?.key?.id || `out_${Date.now()}`
+    const ts     = new Date().toISOString()
+
+    // Salva o arquivo localmente para o chat mostrar
+    const dir      = path.join(MEDIA_DIR, sessionId)
+    fs.mkdirSync(dir, { recursive: true })
+    const filename = `${msgId}.${getExt(mime)}`
+    fs.writeFileSync(path.join(dir, filename), buffer)
+    const mediaUrl = `/media/${sessionId}/${filename}`
+
+    try {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO messages(id,conversation_id,session_id,from_me,body,media_type,media_url,timestamp)
+        VALUES(?,?,?,1,?,?,?,?)
+      `).run(msgId, jid, sessionId, body, mediaType, mediaUrl, ts)
+      this.db.prepare('UPDATE conversations SET last_message=?,last_message_at=? WHERE id=? AND session_id=?')
+        .run(body, ts, jid, sessionId)
+    } catch (_) {}
+
+    const conversation = this._getConversation(jid, sessionId)
+    this.io.emit('message:new', {
+      conversation,
+      message: { id: msgId, conversation_id: jid, session_id: sessionId,
+                 from_me: 1, body, media_type: mediaType, media_url: mediaUrl, timestamp: ts },
+    })
+    return result
+  }
+
+  /* ── Foto de perfil ── */
+  async getProfilePicture(sessionId, jid) {
+    const sock = this.sockets.get(sessionId)
+    if (!sock) return null
+    try { return await sock.profilePictureUrl(jid, 'image') } catch (_) {
+      try { return await sock.profilePictureUrl(jid, 'preview') } catch (_) { return null }
+    }
+  }
+
+  /* ── Disconnect ── */
+  async disconnect(sessionId) {
+    clearTimeout(this.timers.get(sessionId))
+    this.timers.delete(sessionId)
+    const sock = this.sockets.get(sessionId)
+    if (sock) {
+      try { await sock.logout() } catch (_) {}
+      this.sockets.delete(sessionId)
+    }
+    try { fs.rmSync(path.join(SESSIONS_DIR, sessionId), { recursive: true, force: true }) } catch (_) {}
+  }
+
+  /* ── Internos ── */
+  _requireSock(sessionId) {
+    const sock = this.sockets.get(sessionId)
+    if (!sock) throw new Error('Sessão não conectada. Verifique o QR Code.')
+    return sock
+  }
+
+  _getConversation(jid, sessionId) {
+    return this.db.prepare(`
+      SELECT c.*,s.name as session_name,s.phone as session_phone
+      FROM conversations c JOIN sessions s ON c.session_id=s.id
+      WHERE c.id=? AND c.session_id=?
+    `).get(jid, sessionId)
+  }
+}

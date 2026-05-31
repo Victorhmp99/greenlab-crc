@@ -1,0 +1,5 @@
+
+🟢  CRC Green Lab  →  http://localhost:3001  [desenvolvimento]
+
+✅ [teste] Conectado: +556181793632
+✅ [GREEN] Conectado: +556190443888
