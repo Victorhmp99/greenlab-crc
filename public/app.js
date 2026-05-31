@@ -302,7 +302,7 @@ async function openConversation(convId, sessionId) {
   renderConversations()
 
   const params = new URLSearchParams({ session_id: sessionId })
-  const res    = await fetch(`/api/conversations/${encodeURIComponent(convId)}/messages?${params}`)
+  const res    = await fetch(`/api/conversations/${encodeURIComponent(convId)}/messages?${params}`, { headers: TENANT_HEADERS })
   const msgs   = await res.json()
 
   const list = document.getElementById('messages-list')
@@ -321,7 +321,7 @@ async function loadProfilePic(conv) {
   initials.classList.remove('hidden')
 
   try {
-    const res  = await fetch(`/api/conversations/${encodeURIComponent(conv.id)}/profile-picture?session_id=${conv.session_id}`)
+    const res  = await fetch(`/api/conversations/${encodeURIComponent(conv.id)}/profile-picture?session_id=${conv.session_id}`, { headers: TENANT_HEADERS })
     const data = await res.json()
     if (data.url) {
       img.src = data.url
@@ -397,7 +397,7 @@ async function sendMessage() {
 
   try {
     const res = await fetch(`/api/conversations/${encodeURIComponent(conv.id)}/messages`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
       body: JSON.stringify({ body: text, session_id: conv.session_id }),
     })
     if (!res.ok) { const e = await res.json(); alert('Erro: ' + e.error) }
@@ -476,7 +476,7 @@ async function sendPendingFile() {
 
   try {
     const res = await fetch(`/api/conversations/${encodeURIComponent(conv.id)}/media`, {
-      method: 'POST', body: fd,
+      method: 'POST', headers: TENANT_HEADERS, body: fd,
     })
     if (!res.ok) { const e = await res.json(); alert('Erro: ' + e.error) }
     else {
@@ -568,7 +568,7 @@ async function sendAudioFile(file, conv) {
 
   try {
     const res = await fetch(`/api/conversations/${encodeURIComponent(conv.id)}/media`, {
-      method: 'POST', body: fd,
+      method: 'POST', headers: TENANT_HEADERS, body: fd,
     })
     if (!res.ok) {
       const err = await res.json()
