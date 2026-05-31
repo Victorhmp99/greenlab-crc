@@ -9,7 +9,7 @@ import multer from 'multer'
 import path from 'path'
 import fs from 'fs'
 import { initDB } from './database/db.js'
-import { SessionManager, lastAudio } from './whatsapp/sessionManager.js'
+import { SessionManager, lastAudio, lastMsgKey } from './whatsapp/sessionManager.js'
 import { PORT, SECRET, ORIGIN, IS_PROD, MEDIA_DIR, SESSIONS_DIR, DATA_DIR as DATA_DIR_USED } from './config.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -249,6 +249,7 @@ app.post('/api/conversations/:jid/media', upload.single('file'), async (req, res
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
 app.get('/debug-audio', (_req, res) => res.json(lastAudio))
+app.get('/debug-msgkey', (_req, res) => res.json(lastMsgKey))
 
 // Diagnóstico de persistência (sem auth, só leitura de metadados)
 app.get('/debug-storage', (_req, res) => {

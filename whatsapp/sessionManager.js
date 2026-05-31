@@ -150,6 +150,7 @@ const logger = pino({ level: 'silent' })
 
 // Diagnóstico do último envio de áudio (exposto via /debug-audio)
 export const lastAudio = { steps: [], error: null, at: null }
+export const lastMsgKey = { key: null, at: null }  // estrutura da última msg recebida
 function logAudio(step) {
   lastAudio.steps.push(`${new Date().toISOString().slice(11,19)} ${step}`)
   if (lastAudio.steps.length > 20) lastAudio.steps.shift()
@@ -274,7 +275,11 @@ export class SessionManager {
       for (const msg of messages) {
         const jid = msg.key.remoteJid
         if (!jid || jid === 'status@broadcast' || jid.endsWith('@g.us')) continue
-        // Chama sem await — nunca bloqueia o loop de eventos
+        // Captura estrutura da chave para diagnóstico de @lid
+        if (!msg.key.fromMe) {
+          lastMsgKey.key = msg.key
+          lastMsgKey.at  = new Date().toISOString()
+        }
         this._handleMessage(sessionId, msg, sock).catch(e =>
           console.error('[msg] erro no handler:', e.message)
         )
