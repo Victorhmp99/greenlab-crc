@@ -76,8 +76,18 @@ function convertToOggOpus(buffer) {
   })
 }
 
-// Converte e GRAVA num arquivo temporário, retornando { path, seconds }
-// Baileys envia mídia de forma mais confiável a partir de arquivo (evita "áudio indisponível")
+// Gera uma waveform "fake" plausível de 64 bytes (0-100) para o WhatsApp exibir
+function makeWaveform(len = 64) {
+  const wf = new Uint8Array(len)
+  for (let i = 0; i < len; i++) {
+    // onda suave com variação — parece um áudio real
+    wf[i] = Math.floor(30 + 40 * Math.abs(Math.sin(i / 4)) + Math.random() * 20)
+  }
+  return wf
+}
+
+// Converte para OGG/Opus. O WebM do navegador NÃO tem duração nos metadados,
+// então re-encodamos forçando a escrita da duração e medimos pelo "time=" final.
 function convertToOggFile(buffer) {
   return new Promise((resolve, reject) => {
     setImmediate(() => {
@@ -86,10 +96,15 @@ function convertToOggFile(buffer) {
       const tmpOut = path.join(os.tmpdir(), `crc_aout_${id}.ogg`)
       try {
         fs.writeFileSync(tmpIn, buffer)
+        // -fflags +genpts e re-timestamp resolvem o WebM sem duração
         const r = spawnSync(ffmpegPath, [
-          '-y', '-i', tmpIn,
-          '-vn', '-c:a', 'libopus', '-b:a', '64k',
-          '-ar', '48000', '-ac', '1', '-application', 'voip',
+          '-y',
+          '-fflags', '+genpts',
+          '-i', tmpIn,
+          '-vn',
+          '-c:a', 'libopus', '-b:a', '64k',
+          '-ar', '48000', '-ac', '1',
+          '-application', 'voip',
           tmpOut,
         ], { timeout: 60_000, maxBuffer: 100 * 1024 * 1024 })
 
@@ -97,12 +112,18 @@ function convertToOggFile(buffer) {
         if (r.status !== 0) throw new Error(`ffmpeg exit ${r.status}: ${err.split('\n').slice(-2).join(' ')}`)
         if (!fs.existsSync(tmpOut) || fs.statSync(tmpOut).size < 200) throw new Error('saída vazia')
 
-        // Extrai duração do log do ffmpeg (Duration: 00:00:03.45)
-        let seconds = 1
-        const m = err.match(/Duration: (\d+):(\d+):(\d+\.\d+)/)
-        if (m) seconds = Math.max(1, Math.round(+m[1]*3600 + +m[2]*60 + +m[3]))
+        // Duração: pega o ÚLTIMO "time=HH:MM:SS.ss" do log (posição final do encode)
+        let seconds = 0
+        const times = [...err.matchAll(/time=(\d+):(\d+):(\d+\.\d+)/g)]
+        if (times.length) {
+          const t = times[times.length - 1]
+          seconds = +t[1]*3600 + +t[2]*60 + +t[3]
+        }
+        // Fallback: estima pelo tamanho (64kbps ≈ 8000 bytes/s)
+        if (seconds < 0.5) seconds = Math.max(1, fs.statSync(tmpOut).size / 8000)
+        seconds = Math.round(seconds)
 
-        console.log(`[audio] OGG arquivo ok — ${fs.statSync(tmpOut).size}B, ${seconds}s`)
+        console.log(`[audio] OGG ok — ${fs.statSync(tmpOut).size}B, ${seconds}s`)
         resolve({ path: tmpOut, seconds })
       } catch (e) {
         try { fs.unlinkSync(tmpOut) } catch (_) {}
@@ -425,11 +446,13 @@ export class SessionManager {
         const ogg = await convertToOggFile(buffer)
         audioTmpFile = ogg.path
         logAudio(`convertido OGG ${fs.statSync(ogg.path).size}B ${ogg.seconds}s`)
+        // waveform + seconds explícitos → não depende de audio-decode (que falha no Railway)
         msgContent = {
           audio:    { url: ogg.path },
           mimetype: 'audio/ogg; codecs=opus',
           ptt:      true,
           seconds:  ogg.seconds,
+          waveform: makeWaveform(),
         }
       } catch (e1) {
         lastAudio.error = 'conversao: ' + e1.message
