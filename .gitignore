@@ -2,6 +2,12 @@ node_modules/
 sessions/
 media/
 crc.db
+crc.db-shm
+crc.db-wal
 .env
 *.log
 logs/
+out.txt
+out2.txt
+err.txt
+err2.txt
