@@ -10,7 +10,7 @@ import path from 'path'
 import fs from 'fs'
 import { initDB } from './database/db.js'
 import { SessionManager } from './whatsapp/sessionManager.js'
-import { PORT, SECRET, ORIGIN, IS_PROD, MEDIA_DIR } from './config.js'
+import { PORT, SECRET, ORIGIN, IS_PROD, MEDIA_DIR, SESSIONS_DIR, DATA_DIR as DATA_DIR_USED } from './config.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -249,16 +249,14 @@ app.get('/health', (_req, res) => res.json({ ok: true }))
 
 // Diagnóstico de persistência (sem auth, só leitura de metadados)
 app.get('/debug-storage', (_req, res) => {
-  const dataDir  = process.env.DATA_DIR || '(não definido)'
   let sessionDirs = []
   let dbExists = false
   try {
-    const sessPath = path.join(process.env.DATA_DIR || __dirname, 'sessions')
-    sessionDirs = fs.existsSync(sessPath) ? fs.readdirSync(sessPath) : []
-    dbExists = fs.existsSync(path.join(process.env.DATA_DIR || __dirname, 'crc.db'))
+    sessionDirs = fs.existsSync(SESSIONS_DIR) ? fs.readdirSync(SESSIONS_DIR) : []
+    dbExists = fs.existsSync(path.join(DATA_DIR_USED, 'crc.db'))
   } catch (e) { /* ignore */ }
   const sessionsInDb = db.prepare('SELECT COUNT(*) as n FROM sessions').get().n
-  res.json({ DATA_DIR: dataDir, dbExists, sessionsNoBanco: sessionsInDb, pastasDeSessao: sessionDirs })
+  res.json({ DATA_DIR: DATA_DIR_USED, dbExists, sessionsNoBanco: sessionsInDb, pastasDeSessao: sessionDirs })
 })
 
 app.get('*', (_req, res) => {
