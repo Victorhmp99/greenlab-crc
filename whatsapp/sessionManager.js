@@ -450,9 +450,11 @@ export class SessionManager {
       try {
         const ogg = await convertToOggFile(buffer)
         audioTmpFile = ogg.path
-        logAudio(`convertido OGG ${fs.statSync(ogg.path).size}B ${ogg.seconds}s`)
+        // Lê o OGG como BUFFER (igual à imagem que funciona) em vez de { url }
+        const oggBuffer = fs.readFileSync(ogg.path)
+        logAudio(`convertido OGG ${oggBuffer.length}B ${ogg.seconds}s (buffer)`)
         msgContent = {
-          audio:    { url: ogg.path },
+          audio:    oggBuffer,
           mimetype: 'audio/ogg; codecs=opus',
           ptt:      true,
           seconds:  ogg.seconds,
