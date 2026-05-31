@@ -77,6 +77,25 @@ socket.on('message:media', ({ msgId, sessionId, convId, mediaType, mediaUrl }) =
   bubble.innerHTML = renderMediaContent({ media_type: mediaType, media_url: mediaUrl, body: bubble.textContent.trim() })
 })
 
+// Status das mensagens enviadas (✓ enviado, ✓✓ entregue, ✓✓ azul lido)
+socket.on('message:status', ({ sessionId, convId, msgId, status }) => {
+  const active = state.activeConversation
+  if (!active || active.id !== convId || active.session_id !== sessionId) return
+  const el = document.querySelector(`#msg-${CSS.escape(msgId)} .msg-status`)
+  if (el) el.innerHTML = statusIcon(status)
+})
+
+// Presença: digitando / gravando
+socket.on('presence:update', ({ sessionId, convId, presence }) => {
+  const active = state.activeConversation
+  if (!active || active.id !== convId || active.session_id !== sessionId) return
+  const meta = document.getElementById('chat-presence')
+  if (!meta) return
+  if (presence === 'composing')      meta.textContent = 'digitando…'
+  else if (presence === 'recording') meta.textContent = 'gravando áudio…'
+  else                               meta.textContent = ''
+})
+
 socket.on('message:new', ({ conversation, message }) => {
   if (!conversation) return   // guard contra null em erros internos
   const idx = state.conversations.findIndex(
@@ -285,6 +304,7 @@ async function openConversation(convId, sessionId) {
 
   document.getElementById('chat-empty').classList.add('hidden')
   document.getElementById('chat-content').classList.remove('hidden')
+  document.getElementById('chat-presence').textContent = ''  // limpa "digitando" anterior
   const sColor = sessionColor(conv.session_id)
   document.getElementById('chat-name').textContent            = conv.name || conv.phone
   document.getElementById('chat-avatar-initials').textContent = initials(conv.name || conv.phone)
@@ -368,13 +388,27 @@ function appendMessage(msg) {
   const side = msg.from_me ? 'from-me' : 'from-them'
   const div  = document.createElement('div')
   div.className = `msg-group ${side}`
-  div.id        = `msg-${msg.id}`   // usado pelo evento message:media
+  div.id        = `msg-${msg.id}`
+
+  const statusHtml = msg.from_me
+    ? `<span class="msg-status">${statusIcon(msg.status || 'sent')}</span>`
+    : ''
 
   div.innerHTML = `
     <div class="msg-bubble">${renderMediaContent(msg)}</div>
-    <span class="msg-time">${formatTime(msg.timestamp)}</span>
+    <span class="msg-time">${formatTime(msg.timestamp)}${statusHtml}</span>
   `
   list.appendChild(div)
+}
+
+// ✓ enviado | ✓✓ entregue | ✓✓ azul lido
+function statusIcon(status) {
+  if (status === 'read')
+    return `<svg class="tick read" width="16" height="11" viewBox="0 0 16 11" fill="none"><path d="M1 5.5L4 8.5L9.5 2.5" stroke="#53bdeb" stroke-width="1.5" stroke-linecap="round"/><path d="M6 8.5L11.5 2.5" stroke="#53bdeb" stroke-width="1.5" stroke-linecap="round"/></svg>`
+  if (status === 'delivered')
+    return `<svg class="tick" width="16" height="11" viewBox="0 0 16 11" fill="none"><path d="M1 5.5L4 8.5L9.5 2.5" stroke="#8a8a8a" stroke-width="1.5" stroke-linecap="round"/><path d="M6 8.5L11.5 2.5" stroke="#8a8a8a" stroke-width="1.5" stroke-linecap="round"/></svg>`
+  // sent
+  return `<svg class="tick" width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M1 5.5L4 8.5L10 2" stroke="#8a8a8a" stroke-width="1.5" stroke-linecap="round"/></svg>`
 }
 
 /* ── Enviar texto ─────────────────────────────────────────── */

@@ -177,7 +177,14 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 .from-me   .msg-bubble { background: var(--bubble-out); border-bottom-right-radius: 2px; color: var(--text); }
 .from-them .msg-bubble { background: var(--bubble-in);  border-bottom-left-radius: 2px;  color: var(--text); }
 
-.msg-time { font-size: 10px; color: var(--text-3); margin-top: 2px; padding: 0 4px; }
+.msg-time { font-size: 10px; color: var(--text-3); margin-top: 2px; padding: 0 4px; display: inline-flex; align-items: center; gap: 4px; }
+.msg-status { display: inline-flex; align-items: center; }
+.msg-status .tick { display: block; }
+
+#chat-presence {
+  display: block; font-size: 11px; margin-top: 1px;
+  color: var(--green); font-style: italic; min-height: 13px;
+}
 
 /* ── Mídia nas mensagens ── */
 .msg-media-img {

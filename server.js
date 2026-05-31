@@ -198,6 +198,8 @@ app.get('/api/conversations/:jid/messages', (req, res) => {
     ORDER BY timestamp ASC LIMIT 300
   `).all(req.params.jid, session_id)
   db.prepare('UPDATE conversations SET unread_count = 0 WHERE id = ? AND session_id = ?').run(req.params.jid, session_id)
+  // Marca como lido no WhatsApp e assina presença (digitando) — não bloqueia
+  sm.openChat(session_id, req.params.jid).catch(() => {})
   res.json(msgs)
 })
 

@@ -15,8 +15,24 @@ import os from 'os'
 import { createRequire } from 'module'
 import { SESSIONS_DIR, MEDIA_DIR } from '../config.js'
 
-const _require   = createRequire(import.meta.url)
-const ffmpegPath = _require('ffmpeg-static')
+const _require = createRequire(import.meta.url)
+
+// Resolve o caminho do ffmpeg: prioriza o do sistema (apt no Railway), depois ffmpeg-static
+function resolveFfmpeg() {
+  // 1. ffmpeg do sistema (instalado via apt no Railway/Linux)
+  for (const sysPath of ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg']) {
+    try { if (fs.existsSync(sysPath)) return sysPath } catch (_) {}
+  }
+  // 2. ffmpeg-static (Windows local / fallback)
+  try {
+    const staticPath = _require('ffmpeg-static')
+    if (staticPath && fs.existsSync(staticPath)) return staticPath
+  } catch (_) {}
+  // 3. assume que está no PATH
+  return 'ffmpeg'
+}
+const ffmpegPath = resolveFfmpeg()
+console.log('[ffmpeg] usando:', ffmpegPath)
 
 // Converte via arquivos temporários — evita problemas de pipe no Windows
 function runFfmpeg(inputBuffer, outExt, ffArgs, label) {
@@ -203,6 +219,31 @@ export class SessionManager {
         if (c.name && c.id)
           this.db.prepare('UPDATE conversations SET name=? WHERE id=? AND name=phone').run(c.name, c.id)
       }
+    })
+
+    // ── Status das mensagens enviadas (enviado/entregue/lido) ──
+    sock.ev.on('messages.update', updates => {
+      for (const u of updates) {
+        const status = u.update?.status
+        if (status === undefined) continue
+        // 2=enviado(servidor), 3=entregue, 4=lido, 5=reproduzido
+        const map = { 2: 'sent', 3: 'delivered', 4: 'read', 5: 'read' }
+        const st  = map[status]
+        if (!st) continue
+        const jid   = u.key.remoteJid
+        const msgId = u.key.id
+        this.db.prepare('UPDATE messages SET status=? WHERE id=? AND session_id=?').run(st, msgId, sessionId)
+        this.io.emit('message:status', { sessionId, convId: jid, msgId, status: st })
+      }
+    })
+
+    // ── Presença: digitando / gravando / online ──
+    sock.ev.on('presence.update', ({ id, presences }) => {
+      if (!id || !presences) return
+      // Pega a presença do contato (não de grupo)
+      const p = Object.values(presences)[0]
+      const lastKnown = p?.lastKnownPresence  // 'composing'|'recording'|'available'|'unavailable'|'paused'
+      this.io.emit('presence:update', { sessionId, convId: id, presence: lastKnown })
     })
 
     return sock
@@ -406,6 +447,26 @@ export class SessionManager {
       this.sockets.delete(sessionId)
     }
     try { fs.rmSync(path.join(SESSIONS_DIR, sessionId), { recursive: true, force: true }) } catch (_) {}
+  }
+
+  /* ── Marcar conversa como lida + assinar presença ── */
+  async openChat(sessionId, jid) {
+    const sock = this.sockets.get(sessionId)
+    if (!sock) return
+    try {
+      // Assina updates de presença (digitando) deste contato
+      await sock.presenceSubscribe(jid)
+    } catch (_) {}
+    try {
+      // Marca as mensagens recebidas como lidas (✓✓ azul para o contato)
+      const msgs = this.db.prepare(
+        'SELECT id FROM messages WHERE conversation_id=? AND session_id=? AND from_me=0 ORDER BY timestamp DESC LIMIT 20'
+      ).all(jid, sessionId)
+      if (msgs.length) {
+        const keys = msgs.map(m => ({ remoteJid: jid, id: m.id, fromMe: false }))
+        await sock.readMessages(keys)
+      }
+    } catch (_) {}
   }
 
   /* ── Internos ── */
