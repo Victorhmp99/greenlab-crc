@@ -243,6 +243,8 @@ app.post('/api/conversations/:jid/media', upload.single('file'), async (req, res
   }
 })
 
+app.get('/health', (_req, res) => res.json({ ok: true }))
+
 app.get('*', (_req, res) => {
   // Injeta o secret na meta tag para autenticação do frontend
   const html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8')

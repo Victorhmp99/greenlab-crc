@@ -13,8 +13,8 @@ COPY . .
 # Volume persistente montado pelo Railway em /data
 ENV DATA_DIR=/data
 ENV NODE_ENV=production
-ENV PORT=3001
 
-EXPOSE 3001
+# PORT é injetado pelo Railway automaticamente
+EXPOSE 8080
 
 CMD ["node", "server.js"]
