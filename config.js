@@ -6,9 +6,25 @@ import fs from 'fs'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // DATA_DIR: onde ficam banco, sessões e mídia
-// Em produção (Railway/VPS), aponta para o volume persistente montado em /data
-// Em desenvolvimento, usa a própria pasta do projeto
-export const DATA_DIR = process.env.DATA_DIR || __dirname
+// Prioridade:
+//   1. process.env.DATA_DIR (se definido)
+//   2. /data se existir (volume Railway/VPS montado) — detecção automática
+//   3. pasta do projeto (desenvolvimento local)
+function resolveDataDir() {
+  if (process.env.DATA_DIR) return process.env.DATA_DIR
+  // Detecta volume persistente montado em /data
+  try {
+    if (fs.existsSync('/data')) {
+      // Testa se é gravável
+      fs.accessSync('/data', fs.constants.W_OK)
+      return '/data'
+    }
+  } catch (_) { /* não gravável, cai no fallback */ }
+  return __dirname
+}
+
+export const DATA_DIR = resolveDataDir()
+console.log('[config] DATA_DIR =', DATA_DIR)
 
 // Garante que os subdiretórios existem
 for (const dir of ['sessions', 'media']) {
