@@ -76,6 +76,44 @@ function convertToOggOpus(buffer) {
   })
 }
 
+// Converte e GRAVA num arquivo temporário, retornando { path, seconds }
+// Baileys envia mídia de forma mais confiável a partir de arquivo (evita "áudio indisponível")
+function convertToOggFile(buffer) {
+  return new Promise((resolve, reject) => {
+    setImmediate(() => {
+      const id     = `${Date.now()}_${Math.random().toString(36).slice(2)}`
+      const tmpIn  = path.join(os.tmpdir(), `crc_ain_${id}`)
+      const tmpOut = path.join(os.tmpdir(), `crc_aout_${id}.ogg`)
+      try {
+        fs.writeFileSync(tmpIn, buffer)
+        const r = spawnSync(ffmpegPath, [
+          '-y', '-i', tmpIn,
+          '-vn', '-c:a', 'libopus', '-b:a', '64k',
+          '-ar', '48000', '-ac', '1', '-application', 'voip',
+          tmpOut,
+        ], { timeout: 60_000, maxBuffer: 100 * 1024 * 1024 })
+
+        const err = r.stderr?.toString() || ''
+        if (r.status !== 0) throw new Error(`ffmpeg exit ${r.status}: ${err.split('\n').slice(-2).join(' ')}`)
+        if (!fs.existsSync(tmpOut) || fs.statSync(tmpOut).size < 200) throw new Error('saída vazia')
+
+        // Extrai duração do log do ffmpeg (Duration: 00:00:03.45)
+        let seconds = 1
+        const m = err.match(/Duration: (\d+):(\d+):(\d+\.\d+)/)
+        if (m) seconds = Math.max(1, Math.round(+m[1]*3600 + +m[2]*60 + +m[3]))
+
+        console.log(`[audio] OGG arquivo ok — ${fs.statSync(tmpOut).size}B, ${seconds}s`)
+        resolve({ path: tmpOut, seconds })
+      } catch (e) {
+        try { fs.unlinkSync(tmpOut) } catch (_) {}
+        reject(e)
+      } finally {
+        try { fs.unlinkSync(tmpIn) } catch (_) {}
+      }
+    })
+  })
+}
+
 function convertToMp4Aac(buffer) {
   return new Promise((resolve, reject) => {
     setImmediate(() => {
@@ -360,6 +398,7 @@ export class SessionManager {
     const mime = file.mimetype
 
     let msgContent, mediaType, body
+    let audioTmpFile = null  // arquivo OGG temporário, limpo após o envio
 
     if (mime.startsWith('image/')) {
       msgContent = { image: buffer, caption, mimetype: mime }
@@ -373,10 +412,15 @@ export class SessionManager {
       mediaType = 'audio'
       body      = '[Áudio 🎵]'
       try {
-        const oggBuffer = await convertToOggOpus(buffer)
-        console.log(`[audio] OGG convertido — ${oggBuffer.length}B — jid: ${jid}`)
-        // ptt:false para testar se o upload funciona sem o pipeline PTT
-        msgContent = { audio: oggBuffer, mimetype: 'audio/ogg; codecs=opus', ptt: false }
+        const ogg = await convertToOggFile(buffer)
+        audioTmpFile = ogg.path  // limpo no finally após envio
+        // Envia a partir do ARQUIVO (url) — Baileys calcula hashes corretamente
+        msgContent = {
+          audio:    { url: ogg.path },
+          mimetype: 'audio/ogg; codecs=opus',
+          ptt:      true,
+          seconds:  ogg.seconds,
+        }
       } catch (e1) {
         console.warn('[audio] conversão OGG falhou:', e1.message)
         msgContent = { document: buffer, mimetype: mime, fileName: originalname || `audio.${getExt(mime)}` }
@@ -404,11 +448,20 @@ export class SessionManager {
     const ts     = new Date().toISOString()
 
     // Salva o arquivo localmente para o chat mostrar
-    const dir      = path.join(MEDIA_DIR, sessionId)
+    const dir = path.join(MEDIA_DIR, sessionId)
     fs.mkdirSync(dir, { recursive: true })
-    const filename = `${msgId}.${getExt(mime)}`
-    fs.writeFileSync(path.join(dir, filename), buffer)
+    // Para áudio convertido, salva o OGG (toca melhor); senão o buffer original
+    const isOggAudio = mediaType === 'audio' && audioTmpFile
+    const filename   = `${msgId}.${isOggAudio ? 'ogg' : getExt(mime)}`
+    if (isOggAudio) {
+      try { fs.copyFileSync(audioTmpFile, path.join(dir, filename)) }
+      catch (_) { fs.writeFileSync(path.join(dir, filename), buffer) }
+    } else {
+      fs.writeFileSync(path.join(dir, filename), buffer)
+    }
     const mediaUrl = `/media/${sessionId}/${filename}`
+    // Limpa o arquivo temporário de conversão
+    if (audioTmpFile) { try { fs.unlinkSync(audioTmpFile) } catch (_) {} }
 
     try {
       this.db.prepare(`
