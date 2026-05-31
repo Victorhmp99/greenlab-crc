@@ -127,6 +127,14 @@ function convertToMp4Aac(buffer) {
 
 const logger = pino({ level: 'silent' })
 
+// Diagnóstico do último envio de áudio (exposto via /debug-audio)
+export const lastAudio = { steps: [], error: null, at: null }
+function logAudio(step) {
+  lastAudio.steps.push(`${new Date().toISOString().slice(11,19)} ${step}`)
+  if (lastAudio.steps.length > 20) lastAudio.steps.shift()
+  console.log('[audio]', step)
+}
+
 /* ── Helpers ─────────────────────────────────────────── */
 
 const EXT_MAP = {
@@ -411,10 +419,12 @@ export class SessionManager {
     } else if (mime.startsWith('audio/')) {
       mediaType = 'audio'
       body      = '[Áudio 🎵]'
+      lastAudio.steps = []; lastAudio.error = null; lastAudio.at = new Date().toISOString()
+      logAudio(`recebido mime=${mime} size=${buffer.length}B ffmpeg=${ffmpegPath}`)
       try {
         const ogg = await convertToOggFile(buffer)
-        audioTmpFile = ogg.path  // limpo no finally após envio
-        // Envia a partir do ARQUIVO (url) — Baileys calcula hashes corretamente
+        audioTmpFile = ogg.path
+        logAudio(`convertido OGG ${fs.statSync(ogg.path).size}B ${ogg.seconds}s`)
         msgContent = {
           audio:    { url: ogg.path },
           mimetype: 'audio/ogg; codecs=opus',
@@ -422,7 +432,8 @@ export class SessionManager {
           seconds:  ogg.seconds,
         }
       } catch (e1) {
-        console.warn('[audio] conversão OGG falhou:', e1.message)
+        lastAudio.error = 'conversao: ' + e1.message
+        logAudio('CONVERSAO FALHOU: ' + e1.message)
         msgContent = { document: buffer, mimetype: mime, fileName: originalname || `audio.${getExt(mime)}` }
       }
     } else {
@@ -432,17 +443,16 @@ export class SessionManager {
     }
 
     let result
+    const isAudio = mediaType === 'audio'
     try {
-      console.log('[sendMedia] enviando via Baileys — tipo:', Object.keys(msgContent)[0], '| ptt:', msgContent.ptt ?? 'n/a', '| jid:', jid)
+      if (isAudio) logAudio(`enviando Baileys tipo=${Object.keys(msgContent)[0]} ptt=${msgContent.ptt}`)
       result = await sock.sendMessage(jid, msgContent)
-      console.log('[sendMedia] ok — msgId:', result?.key?.id)
+      if (isAudio) logAudio(`ENVIADO ok msgId=${result?.key?.id}`)
     } catch (sendErr) {
-      console.error('[sendMedia] ERRO sock.sendMessage:', sendErr.message, sendErr.stack?.split('\n')[1])
-      // Fallback: documento
+      if (isAudio) { lastAudio.error = 'envio: ' + sendErr.message; logAudio('ENVIO FALHOU: ' + sendErr.message) }
+      console.error('[sendMedia] ERRO sock.sendMessage:', sendErr.message)
       const fallback = { document: buffer, mimetype: mime, fileName: originalname || `arquivo.${getExt(mime)}` }
-      console.log('[sendMedia] tentando fallback documento...')
       result = await sock.sendMessage(jid, fallback)
-      console.log('[sendMedia] fallback ok — msgId:', result?.key?.id)
     }
     const msgId  = result?.key?.id || `out_${Date.now()}`
     const ts     = new Date().toISOString()
