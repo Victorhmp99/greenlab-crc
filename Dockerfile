@@ -1,4 +1,4 @@
-FROM node:22-slim
+FROM node:24-slim
 
 # ffmpeg para conversão de áudio
 RUN apt-get update && apt-get install -y ffmpeg --no-install-recommends && rm -rf /var/lib/apt/lists/*
