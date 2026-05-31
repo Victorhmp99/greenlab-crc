@@ -256,6 +256,6 @@ app.get('*', (_req, res) => {
   res.send(injected)
 })
 
-httpServer.listen(PORT, () => {
-  console.log(`\n🟢  CRC Green Lab  →  http://localhost:${PORT}  [${IS_PROD ? 'PRODUÇÃO' : 'desenvolvimento'}]\n`)
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n🟢  CRC Green Lab rodando na porta ${PORT}  [${IS_PROD ? 'PRODUÇÃO' : 'desenvolvimento'}]\n`)
 })
