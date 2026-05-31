@@ -1,8 +1,5 @@
 [phases.setup]
-nixPkgs = ["ffmpeg"]
-
-[phases.install]
-cmds = ["npm ci"]
+aptPkgs = ["ffmpeg"]
 
 [start]
 cmd = "node --experimental-sqlite server.js"
