@@ -13,6 +13,7 @@ import fs from 'fs'
 import { spawnSync } from 'child_process'
 import os from 'os'
 import { createRequire } from 'module'
+import { SESSIONS_DIR, MEDIA_DIR } from '../config.js'
 
 const _require   = createRequire(import.meta.url)
 const ffmpegPath = _require('ffmpeg-static')
@@ -69,8 +70,6 @@ function convertToMp4Aac(buffer) {
     })
   })
 }
-
-import { SESSIONS_DIR, MEDIA_DIR } from '../config.js'
 
 const logger = pino({ level: 'silent' })
 
