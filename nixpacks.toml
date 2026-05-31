@@ -5,4 +5,4 @@ nixPkgs = ["ffmpeg"]
 cmds = ["npm ci"]
 
 [start]
-cmd = "node server.js"
+cmd = "node --experimental-sqlite server.js"

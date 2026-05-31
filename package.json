@@ -6,7 +6,7 @@
   "main": "server.js",
   "engines": { "node": ">=24.0.0" },
   "scripts": {
-    "start": "node server.js",
+    "start": "node --experimental-sqlite server.js",
     "dev": "node --watch server.js"
   },
   "dependencies": {
