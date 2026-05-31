@@ -76,6 +76,43 @@ function convertToOggOpus(buffer) {
   })
 }
 
+// Converte qualquer áudio para MP3 (formato universal aceito pelo WhatsApp)
+function convertToMp3(buffer) {
+  return new Promise((resolve, reject) => {
+    setImmediate(() => {
+      const id     = `${Date.now()}_${Math.random().toString(36).slice(2)}`
+      const tmpIn  = path.join(os.tmpdir(), `crc_min_${id}`)
+      const tmpOut = path.join(os.tmpdir(), `crc_mout_${id}.mp3`)
+      try {
+        fs.writeFileSync(tmpIn, buffer)
+        const r = spawnSync(ffmpegPath, [
+          '-y', '-fflags', '+genpts', '-i', tmpIn,
+          '-vn', '-c:a', 'libmp3lame', '-b:a', '128k', '-ar', '44100', '-ac', '1',
+          tmpOut,
+        ], { timeout: 60_000, maxBuffer: 100 * 1024 * 1024 })
+
+        const err = r.stderr?.toString() || ''
+        if (r.status !== 0) throw new Error(`ffmpeg exit ${r.status}: ${err.split('\n').slice(-2).join(' ')}`)
+        if (!fs.existsSync(tmpOut) || fs.statSync(tmpOut).size < 200) throw new Error('saída vazia')
+
+        let seconds = 0
+        const times = [...err.matchAll(/time=(\d+):(\d+):(\d+\.\d+)/g)]
+        if (times.length) { const t = times[times.length-1]; seconds = +t[1]*3600 + +t[2]*60 + +t[3] }
+        if (seconds < 0.5) seconds = Math.max(1, fs.statSync(tmpOut).size / 16000)
+        seconds = Math.round(seconds)
+
+        console.log(`[audio] MP3 ok — ${fs.statSync(tmpOut).size}B, ${seconds}s`)
+        resolve({ path: tmpOut, seconds })
+      } catch (e) {
+        try { fs.unlinkSync(tmpOut) } catch (_) {}
+        reject(e)
+      } finally {
+        try { fs.unlinkSync(tmpIn) } catch (_) {}
+      }
+    })
+  })
+}
+
 // Gera uma waveform "fake" plausível de 64 bytes (0-100) para o WhatsApp exibir
 function makeWaveform(len = 64) {
   const wf = new Uint8Array(len)
@@ -448,17 +485,16 @@ export class SessionManager {
       lastAudio.steps = []; lastAudio.error = null; lastAudio.at = new Date().toISOString()
       logAudio(`recebido mime=${mime} size=${buffer.length}B ffmpeg=${ffmpegPath}`)
       try {
-        const ogg = await convertToOggFile(buffer)
-        audioTmpFile = ogg.path
-        // Lê o OGG como BUFFER (igual à imagem que funciona) em vez de { url }
-        const oggBuffer = fs.readFileSync(ogg.path)
-        logAudio(`convertido OGG ${oggBuffer.length}B ${ogg.seconds}s (buffer)`)
+        // Converte para MP3 — formato de áudio mais aceito universalmente pelo WhatsApp
+        const mp3 = await convertToMp3(buffer)
+        const mp3Buffer = fs.readFileSync(mp3.path)
+        audioTmpFile = mp3.path
+        logAudio(`convertido MP3 ${mp3Buffer.length}B ${mp3.seconds}s`)
         msgContent = {
-          audio:    oggBuffer,
-          mimetype: 'audio/ogg; codecs=opus',
-          ptt:      true,
-          seconds:  ogg.seconds,
-          waveform: makeWaveform(),
+          audio:    mp3Buffer,
+          mimetype: 'audio/mpeg',
+          ptt:      false,
+          seconds:  mp3.seconds,
         }
       } catch (e1) {
         lastAudio.error = 'conversao: ' + e1.message
@@ -489,10 +525,10 @@ export class SessionManager {
     // Salva o arquivo localmente para o chat mostrar
     const dir = path.join(MEDIA_DIR, sessionId)
     fs.mkdirSync(dir, { recursive: true })
-    // Para áudio convertido, salva o OGG (toca melhor); senão o buffer original
-    const isOggAudio = mediaType === 'audio' && audioTmpFile
-    const filename   = `${msgId}.${isOggAudio ? 'ogg' : getExt(mime)}`
-    if (isOggAudio) {
+    // Para áudio convertido, salva o arquivo convertido (mp3); senão o buffer original
+    const isConvAudio = mediaType === 'audio' && audioTmpFile
+    const filename    = `${msgId}.${isConvAudio ? 'mp3' : getExt(mime)}`
+    if (isConvAudio) {
       try { fs.copyFileSync(audioTmpFile, path.join(dir, filename)) }
       catch (_) { fs.writeFileSync(path.join(dir, filename), buffer) }
     } else {
