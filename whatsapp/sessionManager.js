@@ -446,13 +446,12 @@ export class SessionManager {
         const ogg = await convertToOggFile(buffer)
         audioTmpFile = ogg.path
         logAudio(`convertido OGG ${fs.statSync(ogg.path).size}B ${ogg.seconds}s`)
-        // waveform + seconds explícitos → não depende de audio-decode (que falha no Railway)
+        // TESTE: ptt:false (áudio normal) para isolar se o problema é o caminho PTT
         msgContent = {
           audio:    { url: ogg.path },
           mimetype: 'audio/ogg; codecs=opus',
-          ptt:      true,
+          ptt:      false,
           seconds:  ogg.seconds,
-          waveform: makeWaveform(),
         }
       } catch (e1) {
         lastAudio.error = 'conversao: ' + e1.message
