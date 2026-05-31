@@ -446,12 +446,12 @@ export class SessionManager {
         const ogg = await convertToOggFile(buffer)
         audioTmpFile = ogg.path
         logAudio(`convertido OGG ${fs.statSync(ogg.path).size}B ${ogg.seconds}s`)
-        // TESTE: ptt:false (áudio normal) para isolar se o problema é o caminho PTT
         msgContent = {
           audio:    { url: ogg.path },
           mimetype: 'audio/ogg; codecs=opus',
-          ptt:      false,
+          ptt:      true,
           seconds:  ogg.seconds,
+          waveform: makeWaveform(),
         }
       } catch (e1) {
         lastAudio.error = 'conversao: ' + e1.message
