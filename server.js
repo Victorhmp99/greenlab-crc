@@ -24,10 +24,20 @@ const io         = new Server(httpServer, {
   cors: { origin: IS_PROD ? ORIGIN : '*', credentials: true },
 })
 
+app.disable('x-powered-by')   // não revela o stack (Express)
+
+// Cabeçalhos básicos de segurança
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN')
+  res.setHeader('Referrer-Policy', 'no-referrer')
+  next()
+})
+
 app.use(express.json({ limit: '1mb' }))
 // index:false → não serve index.html automático, deixa o catch-all injetar o secret
 app.use(express.static(path.join(__dirname, 'public'), { index: false }))
-app.use('/media', express.static(MEDIA_DIR))
+app.use('/media', express.static(MEDIA_DIR, { maxAge: '7d' }))
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -118,6 +128,13 @@ app.post('/api/sessions', async (req, res) => {
   // Valida que o tenant pertence ao usuário
   if (tenant !== 'default' && tenants.length && !tenants.includes(tenant)) {
     return res.status(403).json({ error: 'Tenant não autorizado' })
+  }
+
+  // Limite de números por empresa (anti-abuso de recursos)
+  const MAX_SESSIONS_PER_TENANT = 10
+  const count = db.prepare('SELECT COUNT(*) as n FROM sessions WHERE tenant_id = ?').get(tenant).n
+  if (count >= MAX_SESSIONS_PER_TENANT) {
+    return res.status(429).json({ error: `Limite de ${MAX_SESSIONS_PER_TENANT} números por empresa atingido` })
   }
 
   const id = `session_${Date.now()}`
@@ -230,6 +247,8 @@ app.get('/api/conversations/:jid/messages', (req, res) => {
 app.post('/api/conversations/:jid/messages', async (req, res) => {
   const { body, session_id } = req.body
   if (!body?.trim() || !session_id) return res.status(400).json({ error: 'body e session_id obrigatórios' })
+  // Limite de tamanho (WhatsApp ~65k; cap defensivo)
+  if (body.length > 10000) return res.status(400).json({ error: 'Mensagem muito longa (máx. 10.000 caracteres)' })
 
   const tenants = getTenants(req)
   if (tenants.length) {
@@ -241,7 +260,7 @@ app.post('/api/conversations/:jid/messages', async (req, res) => {
     await sm.sendMessage(session_id, req.params.jid, body.trim())
     res.json({ ok: true })
   } catch (e) {
-    console.error('[sendMessage] ERRO:', e.message, '| jid:', req.params.jid, '| session:', session_id, '\n', e.stack)
+    console.error('[sendMessage] ERRO:', e.message)
     res.status(500).json({ error: e.message })
   }
 })

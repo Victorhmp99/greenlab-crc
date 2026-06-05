@@ -49,6 +49,8 @@ export function initDB() {
       ON messages(conversation_id, session_id, timestamp);
     CREATE INDEX IF NOT EXISTS idx_conv_session
       ON conversations(session_id, last_message_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_msg_timestamp
+      ON messages(timestamp);
   `)
 
   for (const col of [

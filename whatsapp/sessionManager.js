@@ -253,6 +253,20 @@ export class SessionManager {
     this.qrCounts  = new Map()   // sessionId → nº de QRs gerados
     this.retries   = new Map()   // sessionId → nº de tentativas de reconexão
     this.connecting = new Set()  // sessões com connect() em andamento (evita duplicar socket)
+    this.lastSend  = new Map()   // sessionId → timestamp do último envio (anti-ban)
+    this.dlActive  = 0           // downloads de mídia simultâneos (anti-sobrecarga)
+  }
+
+  /* ── Throttle de envio (anti-banimento) ──
+     WhatsApp bane números que enviam em rajada. Espaça os envios por sessão
+     com um intervalo mínimo. Não descarta mensagens — só atrasa levemente
+     em bursts (imperceptível no uso humano). */
+  async _throttle(sessionId) {
+    const MIN_GAP = 800  // ms entre envios da mesma sessão
+    const last = this.lastSend.get(sessionId) || 0
+    const wait = MIN_GAP - (Date.now() - last)
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+    this.lastSend.set(sessionId, Date.now())
   }
 
   /* ── Emissão escopada por empresa (tenant) ──
@@ -486,6 +500,13 @@ export class SessionManager {
 
   /* ── Download de mídia em background ── */
   async _downloadMediaBg(msg, sessionId, msgId, jid, media, sock) {
+    // Limita downloads simultâneos — evita estouro de memória/CPU em rajadas de mídia
+    const MAX_CONCURRENT = 4
+    let waited = 0
+    while (this.dlActive >= MAX_CONCURRENT && waited < 30000) {
+      await new Promise((r) => setTimeout(r, 250)); waited += 250
+    }
+    this.dlActive++
     try {
       const dir = path.join(MEDIA_DIR, sessionId)
       fs.mkdirSync(dir, { recursive: true })
@@ -508,12 +529,15 @@ export class SessionManager {
       this._emit(sessionId, 'message:media', { msgId, sessionId, convId: jid, mediaType: media.type, mediaUrl })
     } catch (e) {
       console.error(`[media] download falhou (${msgId}):`, e.message)
+    } finally {
+      this.dlActive--
     }
   }
 
   /* ── Enviar texto ── */
   async sendMessage(sessionId, jid, text) {
     const sock = this._requireSock(sessionId)
+    await this._throttle(sessionId)   // anti-banimento
     const result = await sock.sendMessage(jid, { text })
 
     const msgId = result?.key?.id || `out_${Date.now()}`
@@ -540,6 +564,7 @@ export class SessionManager {
   /* ── Enviar mídia ── */
   async sendMedia(sessionId, jid, file, caption = '') {
     const sock = this._requireSock(sessionId)
+    await this._throttle(sessionId)   // anti-banimento
     const { buffer, originalname } = file
     // Usa o mimetype real do arquivo — sem forçar OGG quando é WebM
     const mime = file.mimetype
