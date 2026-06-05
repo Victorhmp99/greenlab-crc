@@ -41,28 +41,50 @@ const state = {
   activeSession:      null,
   activeConversation: null,
   pendingFile:        null,
+  pendingQrSession:   null,   // sessão cujo QR estamos aguardando (modal aberto)
 }
 
 /* ── Socket.io ────────────────────────────────────────────── */
 
 const socket = io()
 
+// Entra nas salas das empresas deste usuário — recebe SÓ os eventos delas
+function joinTenantRooms() {
+  socket.emit('join', { tenants: TENANT_ID, secret: CRC_SECRET })
+}
+socket.on('connect', joinTenantRooms)
+if (socket.connected) joinTenantRooms()
+
 socket.on('qr', ({ sessionId, qr }) => {
+  // Só mostra o QR da sessão que o usuário está conectando agora — evita popups aleatórios
+  if (state.pendingQrSession && sessionId !== state.pendingQrSession) return
   const sess = state.sessions.find(s => s.id === sessionId)
   document.getElementById('qr-session-label').textContent = sess ? `Número: ${sess.name}` : sessionId
   document.getElementById('qr-wrapper').innerHTML = `<img src="${qr}" width="240" height="240" alt="QR Code" />`
   document.getElementById('modal-qr').classList.remove('hidden')
 })
 
-socket.on('session:update', ({ sessionId, status, phone }) => {
+socket.on('session:update', ({ sessionId, status, phone, reason }) => {
   const s = state.sessions.find(s => s.id === sessionId)
   if (!s) return
   s.status = status
   if (phone) s.phone = phone
   renderSessions()
   if (status === 'connected') {
+    state.pendingQrSession = null
     document.getElementById('modal-qr').classList.add('hidden')
     resetQrModal()
+  }
+  // QR expirou / desistiu de conectar → fecha o modal e avisa
+  if (status === 'disconnected' && (reason === 'qr_timeout' || reason === 'max_retries')) {
+    if (state.pendingQrSession === sessionId) {
+      state.pendingQrSession = null
+      document.getElementById('modal-qr').classList.add('hidden')
+      resetQrModal()
+      showToast(reason === 'qr_timeout'
+        ? 'QR Code expirou. Clique no número para tentar conectar de novo.'
+        : 'Não foi possível conectar. Tente novamente.', 'error')
+    }
   }
 })
 
@@ -165,6 +187,10 @@ function renderSessions() {
         <span class="status-dot ${s.status}"></span>
         ${isOwner(s) ? `
         <div class="session-actions">
+          ${s.status === 'disconnected' ? `
+          <button class="btn-muted" title="Reconectar (novo QR)" onclick="event.stopPropagation();reconnectSession('${s.id}','${esc(s.name)}')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          </button>` : ''}
           <button class="btn-muted" title="Limpar conversas" onclick="event.stopPropagation();clearConversations('${s.id}')">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
           </button>
@@ -199,13 +225,28 @@ async function addSession() {
     }
     const sess = await res.json()
     state.sessions.push(sess)
+    state.pendingQrSession = sess.id   // só o QR desta sessão abrirá o modal
     renderSessions()
 
     document.getElementById('qr-session-label').textContent = `Número: ${name}`
+    document.getElementById('qr-wrapper').innerHTML =
+      `<div class="qr-placeholder"><div class="spinner"></div><span>Gerando QR Code…</span></div>`
     document.getElementById('modal-qr').classList.remove('hidden')
   } catch (e) {
     showToast('Erro de conexão: ' + e.message, 'error')
   }
+}
+
+async function reconnectSession(id, name) {
+  state.pendingQrSession = id
+  document.getElementById('qr-session-label').textContent = `Número: ${name}`
+  document.getElementById('qr-wrapper').innerHTML =
+    `<div class="qr-placeholder"><div class="spinner"></div><span>Gerando QR Code…</span></div>`
+  document.getElementById('modal-qr').classList.remove('hidden')
+  try {
+    const res = await fetch(`/api/sessions/${id}/reconnect`, { method: 'POST', headers: TENANT_HEADERS })
+    if (!res.ok) { const e = await res.json().catch(() => ({})); showToast('Erro: ' + (e.error || res.status), 'error') }
+  } catch (e) { showToast('Erro de conexão: ' + e.message, 'error') }
 }
 
 async function removeSession(id) {
@@ -674,7 +715,7 @@ function openAddModal() {
   setTimeout(() => document.getElementById('input-session-name').focus(), 50)
 }
 function closeAddModal() { document.getElementById('modal-add').classList.add('hidden') }
-function closeQrModal()  { document.getElementById('modal-qr').classList.add('hidden') }
+function closeQrModal()  { state.pendingQrSession = null; document.getElementById('modal-qr').classList.add('hidden') }
 function resetQrModal()  {
   document.getElementById('qr-wrapper').innerHTML = `
     <div class="qr-placeholder"><div class="spinner"></div><span>Aguardando QR Code…</span></div>`

@@ -185,9 +185,15 @@ function convertToMp4Aac(buffer) {
 
 const logger = pino({ level: 'silent' })
 
-// Diagnóstico do último envio de áudio (exposto via /debug-audio)
+// Limites para evitar loops de QR e reconexão infinita (sobrecarga)
+const MAX_QR          = 5          // nº de QRs gerados antes de desistir
+const MAX_RETRIES     = 5          // tentativas de reconexão antes de marcar offline
+const RETRY_BASE_MS   = 4000       // backoff base entre tentativas
+const MEDIA_MAX_AGE_D = 7          // dias — mídia mais antiga que isso é limpa
+const MSG_MAX_AGE_D   = 60         // dias — mensagens mais antigas são podadas
+
+// Diagnóstico do último envio de áudio
 export const lastAudio = { steps: [], error: null, at: null }
-export const lastMsgKey = { key: null, at: null }  // estrutura da última msg recebida
 function logAudio(step) {
   lastAudio.steps.push(`${new Date().toISOString().slice(11,19)} ${step}`)
   if (lastAudio.steps.length > 20) lastAudio.steps.shift()
@@ -240,16 +246,52 @@ function detectMediaType(msg) {
 
 export class SessionManager {
   constructor(db, io) {
-    this.db     = db
-    this.io     = io
-    this.sockets = new Map()
-    this.timers  = new Map()
+    this.db        = db
+    this.io        = io
+    this.sockets   = new Map()
+    this.timers    = new Map()
+    this.qrCounts  = new Map()   // sessionId → nº de QRs gerados
+    this.retries   = new Map()   // sessionId → nº de tentativas de reconexão
+    this.connecting = new Set()  // sessões com connect() em andamento (evita duplicar socket)
   }
 
-  /* ── Restore ── */
+  /* ── Emissão escopada por empresa (tenant) ──
+     Cada evento vai SÓ para os navegadores da empresa dona da sessão.
+     Sem isso, o QR/mensagens de uma empresa apareciam para todas. */
+  _emit(sessionId, event, payload) {
+    const row = this.db.prepare('SELECT tenant_id FROM sessions WHERE id=?').get(sessionId)
+    const tenant = row?.tenant_id
+    if (tenant) this.io.to(`tenant:${tenant}`).emit(event, payload)
+    else        this.io.emit(event, payload)  // fallback (sessão sem tenant)
+  }
+
+  /* ── Encerra e remove o socket de uma sessão (sem apagar credenciais) ── */
+  async _teardownSocket(sessionId) {
+    clearTimeout(this.timers.get(sessionId))
+    this.timers.delete(sessionId)
+    const sock = this.sockets.get(sessionId)
+    if (sock) {
+      try { sock.ev.removeAllListeners() } catch (_) {}
+      try { sock.end?.(undefined) }        catch (_) {}
+      this.sockets.delete(sessionId)
+    }
+  }
+
+  /* ── Restore ──
+     Só reconecta sessões REGISTRADAS (já escanearam QR antes).
+     Sessões que nunca completaram ficam offline — evita loop de QR no boot. */
   async restoreAll() {
     for (const s of this.db.prepare('SELECT * FROM sessions').all()) {
-      if (fs.existsSync(path.join(SESSIONS_DIR, s.id))) {
+      const credsPath = path.join(SESSIONS_DIR, s.id, 'creds.json')
+      let registered = false
+      try {
+        if (fs.existsSync(credsPath)) {
+          const creds = JSON.parse(fs.readFileSync(credsPath, 'utf8'))
+          registered = !!creds?.me?.id   // tem identidade = já vinculou
+        }
+      } catch (_) {}
+
+      if (registered) {
         this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(s.id)
         await this.connect(s.id, s.name)
       } else {
@@ -260,63 +302,98 @@ export class SessionManager {
 
   /* ── Connect ── */
   async connect(sessionId, name) {
-    const dir = path.join(SESSIONS_DIR, sessionId)
-    fs.mkdirSync(dir, { recursive: true })
+    // Trava: evita connect() concorrente criando sockets duplicados (causa do QR repetindo)
+    if (this.connecting.has(sessionId)) return
+    this.connecting.add(sessionId)
 
-    const { state, saveCreds } = await useMultiFileAuthState(dir)
-    const { version }          = await fetchLatestBaileysVersion()
+    try {
+      await this._teardownSocket(sessionId)  // encerra socket anterior se houver
 
-    const sock = makeWASocket({
-      version,
-      auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
-      printQRInTerminal: false,
-      logger,
-      browser: ['CRC Green Lab', 'Chrome', '120.0.0'],
-      generateHighQualityLinkPreview: false,
-      syncFullHistory: false,
-    })
+      const dir = path.join(SESSIONS_DIR, sessionId)
+      fs.mkdirSync(dir, { recursive: true })
 
-    this.sockets.set(sessionId, sock)
-    sock.ev.on('creds.update', saveCreds)
+      const { state, saveCreds } = await useMultiFileAuthState(dir)
+      const { version }          = await fetchLatestBaileysVersion()
 
-    sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
-      if (qr) {
-        const img = await qrcode.toDataURL(qr)
-        this.io.emit('qr', { sessionId, qr: img })
-        this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
-        this.io.emit('session:update', { sessionId, status: 'connecting' })
-      }
-      if (connection === 'open') {
-        const phone = '+' + (sock.user?.id?.split(':')[0] || '')
-        this.db.prepare('UPDATE sessions SET status=?,phone=? WHERE id=?').run('connected', phone, sessionId)
-        this.io.emit('session:update', { sessionId, status: 'connected', phone })
-        console.log(`✅ [${name}] Conectado: ${phone}`)
-      }
-      if (connection === 'close') {
-        const code  = lastDisconnect?.error?.output?.statusCode
-        const retry = code !== DisconnectReason.loggedOut
-        this.sockets.delete(sessionId)
-        if (retry) {
+      const sock = makeWASocket({
+        version,
+        auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
+        printQRInTerminal: false,
+        logger,
+        browser: ['CRC Green Lab', 'Chrome', '120.0.0'],
+        generateHighQualityLinkPreview: false,
+        syncFullHistory: false,
+      })
+
+      this.sockets.set(sessionId, sock)
+      sock.ev.on('creds.update', saveCreds)
+
+      sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+        if (qr) {
+          const n = (this.qrCounts.get(sessionId) || 0) + 1
+          this.qrCounts.set(sessionId, n)
+          // Para de gerar QR após o limite — evita QR infinito na tela e socket preso
+          if (n > MAX_QR) {
+            console.log(`⏱️  [${name}] QR não escaneado após ${MAX_QR} tentativas — desistindo`)
+            await this._teardownSocket(sessionId)
+            this.qrCounts.delete(sessionId)
+            this.db.prepare("UPDATE sessions SET status='disconnected' WHERE id=?").run(sessionId)
+            this._emit(sessionId, 'session:update', { sessionId, status: 'disconnected', reason: 'qr_timeout' })
+            return
+          }
+          const img = await qrcode.toDataURL(qr)
           this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
-          this.io.emit('session:update', { sessionId, status: 'connecting' })
-          this.timers.set(sessionId, setTimeout(() => this.connect(sessionId, name), 4000))
-        } else {
-          this.db.prepare("UPDATE sessions SET status='disconnected' WHERE id=?").run(sessionId)
-          this.io.emit('session:update', { sessionId, status: 'disconnected' })
+          this._emit(sessionId, 'qr', { sessionId, qr: img })
+          this._emit(sessionId, 'session:update', { sessionId, status: 'connecting' })
         }
-      }
-    })
+
+        if (connection === 'open') {
+          this.qrCounts.delete(sessionId)
+          this.retries.delete(sessionId)
+          const phone = '+' + (sock.user?.id?.split(':')[0] || '')
+          this.db.prepare('UPDATE sessions SET status=?,phone=? WHERE id=?').run('connected', phone, sessionId)
+          this._emit(sessionId, 'session:update', { sessionId, status: 'connected', phone })
+          console.log(`✅ [${name}] Conectado: ${phone}`)
+        }
+
+        if (connection === 'close') {
+          const code      = lastDisconnect?.error?.output?.statusCode
+          const loggedOut = code === DisconnectReason.loggedOut
+          this.sockets.delete(sessionId)
+
+          if (loggedOut) {
+            // Deslogado no celular → limpa credenciais, não tenta reconectar
+            this.qrCounts.delete(sessionId)
+            this.retries.delete(sessionId)
+            try { fs.rmSync(path.join(SESSIONS_DIR, sessionId), { recursive: true, force: true }) } catch (_) {}
+            this.db.prepare("UPDATE sessions SET status='disconnected' WHERE id=?").run(sessionId)
+            this._emit(sessionId, 'session:update', { sessionId, status: 'disconnected', reason: 'logged_out' })
+            return
+          }
+
+          // Reconexão com backoff e limite — evita loop infinito sobrecarregando
+          const r = (this.retries.get(sessionId) || 0) + 1
+          this.retries.set(sessionId, r)
+          if (r > MAX_RETRIES) {
+            console.log(`❌ [${name}] reconexão falhou ${MAX_RETRIES}x — offline`)
+            this.retries.delete(sessionId)
+            this.db.prepare("UPDATE sessions SET status='disconnected' WHERE id=?").run(sessionId)
+            this._emit(sessionId, 'session:update', { sessionId, status: 'disconnected', reason: 'max_retries' })
+            return
+          }
+          const delay = Math.min(RETRY_BASE_MS * r, 30000)  // backoff até 30s
+          this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
+          this._emit(sessionId, 'session:update', { sessionId, status: 'connecting' })
+          clearTimeout(this.timers.get(sessionId))
+          this.timers.set(sessionId, setTimeout(() => this.connect(sessionId, name), delay))
+        }
+      })
 
     sock.ev.on('messages.upsert', ({ messages, type }) => {
       if (type !== 'notify') return
       for (const msg of messages) {
         const jid = msg.key.remoteJid
         if (!jid || jid === 'status@broadcast' || jid.endsWith('@g.us')) continue
-        // Captura estrutura da chave para diagnóstico de @lid
-        if (!msg.key.fromMe) {
-          lastMsgKey.key = msg.key
-          lastMsgKey.at  = new Date().toISOString()
-        }
         this._handleMessage(sessionId, msg, sock).catch(e =>
           console.error('[msg] erro no handler:', e.message)
         )
@@ -335,27 +412,26 @@ export class SessionManager {
       for (const u of updates) {
         const status = u.update?.status
         if (status === undefined) continue
-        // 2=enviado(servidor), 3=entregue, 4=lido, 5=reproduzido
         const map = { 2: 'sent', 3: 'delivered', 4: 'read', 5: 'read' }
         const st  = map[status]
         if (!st) continue
-        const jid   = u.key.remoteJid
-        const msgId = u.key.id
-        this.db.prepare('UPDATE messages SET status=? WHERE id=? AND session_id=?').run(st, msgId, sessionId)
-        this.io.emit('message:status', { sessionId, convId: jid, msgId, status: st })
+        this.db.prepare('UPDATE messages SET status=? WHERE id=? AND session_id=?').run(st, u.key.id, sessionId)
+        this._emit(sessionId, 'message:status', { sessionId, convId: u.key.remoteJid, msgId: u.key.id, status: st })
       }
     })
 
-    // ── Presença: digitando / gravando / online ──
+    // ── Presença: digitando / gravando ──
     sock.ev.on('presence.update', ({ id, presences }) => {
       if (!id || !presences) return
-      // Pega a presença do contato (não de grupo)
       const p = Object.values(presences)[0]
-      const lastKnown = p?.lastKnownPresence  // 'composing'|'recording'|'available'|'unavailable'|'paused'
-      this.io.emit('presence:update', { sessionId, convId: id, presence: lastKnown })
+      this._emit(sessionId, 'presence:update', { sessionId, convId: id, presence: p?.lastKnownPresence })
     })
 
-    return sock
+      return sock
+    } finally {
+      // Libera a trava de conexão concorrente (a fase de setup terminou)
+      this.connecting.delete(sessionId)
+    }
   }
 
   /* ── Handle incoming message ── */
@@ -395,7 +471,7 @@ export class SessionManager {
 
     // 3. Emite para o frontend AGORA — UI não trava
     const conversation = this._getConversation(jid, sessionId)
-    this.io.emit('message:new', {
+    this._emit(sessionId, 'message:new', {
       conversation,
       message: { id: msgId, conversation_id: jid, session_id: sessionId,
                  from_me: fromMe ? 1 : 0, body, media_type: media?.type ?? null,
@@ -429,7 +505,7 @@ export class SessionManager {
         .run(mediaUrl, msgId, sessionId)
 
       // Notifica o frontend para atualizar o balão específico
-      this.io.emit('message:media', { msgId, sessionId, convId: jid, mediaType: media.type, mediaUrl })
+      this._emit(sessionId, 'message:media', { msgId, sessionId, convId: jid, mediaType: media.type, mediaUrl })
     } catch (e) {
       console.error(`[media] download falhou (${msgId}):`, e.message)
     }
@@ -453,7 +529,7 @@ export class SessionManager {
     } catch (_) {}
 
     const conversation = this._getConversation(jid, sessionId)
-    this.io.emit('message:new', {
+    this._emit(sessionId, 'message:new', {
       conversation,
       message: { id: msgId, conversation_id: jid, session_id: sessionId,
                  from_me: 1, body: text, media_type: null, media_url: null, timestamp: ts },
@@ -548,7 +624,7 @@ export class SessionManager {
     } catch (_) {}
 
     const conversation = this._getConversation(jid, sessionId)
-    this.io.emit('message:new', {
+    this._emit(sessionId, 'message:new', {
       conversation,
       message: { id: msgId, conversation_id: jid, session_id: sessionId,
                  from_me: 1, body, media_type: mediaType, media_url: mediaUrl, timestamp: ts },
@@ -567,14 +643,63 @@ export class SessionManager {
 
   /* ── Disconnect ── */
   async disconnect(sessionId) {
-    clearTimeout(this.timers.get(sessionId))
-    this.timers.delete(sessionId)
+    this.qrCounts.delete(sessionId)
+    this.retries.delete(sessionId)
     const sock = this.sockets.get(sessionId)
-    if (sock) {
-      try { await sock.logout() } catch (_) {}
-      this.sockets.delete(sessionId)
-    }
+    if (sock) { try { await sock.logout() } catch (_) {} }
+    await this._teardownSocket(sessionId)
+    // Remove credenciais e mídia da sessão
     try { fs.rmSync(path.join(SESSIONS_DIR, sessionId), { recursive: true, force: true }) } catch (_) {}
+    try { fs.rmSync(path.join(MEDIA_DIR, sessionId),    { recursive: true, force: true }) } catch (_) {}
+  }
+
+  /* ── Limpeza periódica (evita sobrecarga de disco/banco) ──
+     • Remove arquivos de mídia antigos
+     • Poda mensagens antigas do banco
+     • Roda no boot e a cada 12h */
+  cleanup() {
+    let mediaRemoved = 0
+    try {
+      const cutoff = Date.now() - MEDIA_MAX_AGE_D * 86400000
+      if (fs.existsSync(MEDIA_DIR)) {
+        for (const sessDir of fs.readdirSync(MEDIA_DIR)) {
+          const full = path.join(MEDIA_DIR, sessDir)
+          if (!fs.statSync(full).isDirectory()) continue
+          for (const file of fs.readdirSync(full)) {
+            const fp = path.join(full, file)
+            try {
+              if (fs.statSync(fp).mtimeMs < cutoff) { fs.unlinkSync(fp); mediaRemoved++ }
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (e) { console.error('[cleanup] mídia:', e.message) }
+
+    let msgsRemoved = 0
+    try {
+      const cutoffIso = new Date(Date.now() - MSG_MAX_AGE_D * 86400000).toISOString()
+      const r = this.db.prepare('DELETE FROM messages WHERE timestamp < ?').run(cutoffIso)
+      msgsRemoved = r.changes ?? 0
+    } catch (e) { console.error('[cleanup] mensagens:', e.message) }
+
+    if (mediaRemoved || msgsRemoved) {
+      console.log(`🧹 cleanup: ${mediaRemoved} mídias, ${msgsRemoved} mensagens antigas removidas`)
+    }
+  }
+
+  /* Inicia a limpeza periódica */
+  startCleanupSchedule() {
+    this.cleanup()
+    setInterval(() => this.cleanup(), 12 * 60 * 60 * 1000).unref()
+  }
+
+  /* ── Reconectar uma sessão existente (após timeout de QR) ── */
+  async reconnect(sessionId, name) {
+    this.qrCounts.delete(sessionId)
+    this.retries.delete(sessionId)
+    this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
+    this._emit(sessionId, 'session:update', { sessionId, status: 'connecting' })
+    await this.connect(sessionId, name)
   }
 
   /* ── Marcar conversa como lida + assinar presença ── */

@@ -9,8 +9,8 @@ import multer from 'multer'
 import path from 'path'
 import fs from 'fs'
 import { initDB } from './database/db.js'
-import { SessionManager, lastAudio, lastMsgKey } from './whatsapp/sessionManager.js'
-import { PORT, SECRET, ORIGIN, IS_PROD, MEDIA_DIR, SESSIONS_DIR, DATA_DIR as DATA_DIR_USED } from './config.js'
+import { SessionManager } from './whatsapp/sessionManager.js'
+import { PORT, SECRET, ORIGIN, IS_PROD, MEDIA_DIR } from './config.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -41,6 +41,20 @@ const upload = multer({
 const db = initDB()
 const sm = new SessionManager(db, io)
 sm.restoreAll().catch(console.error)
+sm.startCleanupSchedule()   // limpeza periódica de mídia/mensagens antigas
+
+/* ── Socket.io: salas por empresa (escopo dos eventos) ──
+   Cada navegador entra nas salas das empresas a que tem acesso.
+   Assim QR/mensagens de uma empresa NÃO vazam para outras. */
+io.on('connection', (socket) => {
+  socket.on('join', (payload) => {
+    // valida o secret em produção antes de entrar nas salas
+    if (IS_PROD && SECRET && payload?.secret !== SECRET) return
+    const ids = String(payload?.tenants || '')
+      .split(',').map((s) => s.trim()).filter(Boolean)
+    for (const id of ids) socket.join(`tenant:${id}`)
+  })
+})
 
 /* ── Autenticação ──────────────────────────────────────────── */
 
@@ -110,6 +124,16 @@ app.post('/api/sessions', async (req, res) => {
   db.prepare("INSERT INTO sessions (id, name, status, tenant_id, created_by) VALUES (?, ?, 'connecting', ?, ?)").run(id, name.trim(), tenant, created_by)
   sm.connect(id, name.trim()).catch(console.error)
   res.json({ id, name: name.trim(), status: 'connecting', tenant_id: tenant, created_by })
+})
+
+// Reconecta uma sessão existente (após QR expirar / cair)
+app.post('/api/sessions/:id/reconnect', async (req, res) => {
+  const userId = getUserId(req)
+  if (!assertOwner(req.params.id, userId, res)) return
+  const s = db.prepare('SELECT name FROM sessions WHERE id = ?').get(req.params.id)
+  if (!s) return res.status(404).json({ error: 'Sessão não encontrada' })
+  sm.reconnect(req.params.id, s.name).catch(console.error)
+  res.json({ ok: true })
 })
 
 app.delete('/api/sessions/:id', async (req, res) => {
@@ -248,20 +272,6 @@ app.post('/api/conversations/:jid/media', upload.single('file'), async (req, res
 })
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
-app.get('/debug-audio', (_req, res) => res.json(lastAudio))
-app.get('/debug-msgkey', (_req, res) => res.json(lastMsgKey))
-
-// Diagnóstico de persistência (sem auth, só leitura de metadados)
-app.get('/debug-storage', (_req, res) => {
-  let sessionDirs = []
-  let dbExists = false
-  try {
-    sessionDirs = fs.existsSync(SESSIONS_DIR) ? fs.readdirSync(SESSIONS_DIR) : []
-    dbExists = fs.existsSync(path.join(DATA_DIR_USED, 'crc.db'))
-  } catch (e) { /* ignore */ }
-  const sessionsInDb = db.prepare('SELECT COUNT(*) as n FROM sessions').get().n
-  res.json({ DATA_DIR: DATA_DIR_USED, dbExists, sessionsNoBanco: sessionsInDb, pastasDeSessao: sessionDirs })
-})
 
 app.get('*', (_req, res) => {
   // Injeta o secret na meta tag para autenticação do frontend
