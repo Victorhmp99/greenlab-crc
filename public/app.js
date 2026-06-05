@@ -303,7 +303,7 @@ function renderConversations() {
   list.innerHTML = state.conversations.map(c => {
     const isActive = state.activeConversation?.id === c.id && state.activeConversation?.session_id === c.session_id
     const avatarContent = c.profile_pic
-      ? `<img src="${c.profile_pic}" onerror="this.style.display='none'" />${initials(c.name || c.phone)}`
+      ? `<img src="${esc(c.profile_pic)}" onerror="this.style.display='none'" />${initials(c.name || c.phone)}`
       : initials(c.name || c.phone)
     const sColor = sessionColor(c.session_id)
     return `
@@ -741,7 +741,8 @@ function autoResize(el) {
 function esc(str) {
   if (!str) return ''
   return String(str)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/`/g, '&#96;')
 }
 
 function initials(name) {
