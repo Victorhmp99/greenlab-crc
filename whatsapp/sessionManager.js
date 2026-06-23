@@ -256,6 +256,7 @@ export class SessionManager {
     this.connecting = new Set()  // sessões com connect() em andamento (evita duplicar socket)
     this.lastSend  = new Map()   // sessionId → timestamp do último envio (anti-ban)
     this.dlActive  = 0           // downloads de mídia simultâneos (anti-sobrecarga)
+    this.tenantCache = new Map() // sessionId → tenant_id (evita query no banco a cada evento)
   }
 
   /* ── Throttle de envio (anti-banimento) ──
@@ -274,10 +275,15 @@ export class SessionManager {
      Cada evento vai SÓ para os navegadores da empresa dona da sessão.
      Sem isso, o QR/mensagens de uma empresa apareciam para todas. */
   _emit(sessionId, event, payload) {
-    const row = this.db.prepare('SELECT tenant_id FROM sessions WHERE id=?').get(sessionId)
-    const tenant = row?.tenant_id
+    // Tenant cacheado em memória — evita uma query síncrona no banco a cada evento
+    // (mensagem/presença/status), que congestionava o event loop sob tráfego.
+    let tenant = this.tenantCache.get(sessionId)
+    if (tenant === undefined) {
+      tenant = this.db.prepare('SELECT tenant_id FROM sessions WHERE id=?').get(sessionId)?.tenant_id ?? null
+      this.tenantCache.set(sessionId, tenant)
+    }
     if (tenant) this.io.to(`tenant:${tenant}`).emit(event, payload)
-    else        this.io.emit(event, payload)  // fallback (sessão sem tenant)
+    else        this.io.emit(event, payload)
   }
 
   /* ── Encerra e remove o socket de uma sessão (sem apagar credenciais) ── */
@@ -671,6 +677,8 @@ export class SessionManager {
   async disconnect(sessionId) {
     this.qrCounts.delete(sessionId)
     this.retries.delete(sessionId)
+    this.tenantCache.delete(sessionId)
+    this.lastSend.delete(sessionId)
     const sock = this.sockets.get(sessionId)
     if (sock) { try { await sock.logout() } catch (_) {} }
     await this._teardownSocket(sessionId)
