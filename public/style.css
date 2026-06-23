@@ -99,10 +99,16 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 .conv-item {
   display: flex; align-items: center; gap: 10px;
   padding: 11px 14px; cursor: pointer; transition: background .12s;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border); position: relative;
 }
 .conv-item:hover { background: var(--bg-2); }
 .conv-item.active { background: var(--green-dim); border-left: 2px solid var(--green); }
+
+/* Botão de apagar conversa — aparece no hover (e sempre no touch via media query) */
+.conv-del {
+  flex-shrink: 0; opacity: 0; transition: opacity .12s;
+}
+.conv-item:hover .conv-del { opacity: 1; }
 
 .conv-avatar {
   width: 42px; height: 42px; border-radius: 50%;
@@ -345,3 +351,10 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+/* Em telas touch (iPad/celular) os botões de ação ficam sempre visíveis */
+@media (hover: none) and (pointer: coarse) {
+  .conv-del { opacity: 1 !important; }
+  .session-actions { display: flex !important; }
+  input, textarea, select { font-size: 16px !important; }
+}

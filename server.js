@@ -223,6 +223,47 @@ app.get('/api/conversations', (req, res) => {
   res.json(db.prepare(sql).all(...params))
 })
 
+// Apaga UMA conversa do CRC (não afeta o WhatsApp) — conversa + mensagens locais
+app.delete('/api/conversations/:jid', (req, res) => {
+  const { session_id } = req.query
+  if (!session_id) return res.status(400).json({ error: 'session_id obrigatório' })
+  const tenants = getTenants(req)
+  if (tenants.length) {
+    const s = db.prepare('SELECT tenant_id FROM sessions WHERE id = ?').get(session_id)
+    if (!s || !tenants.includes(s.tenant_id)) return res.status(403).json({ error: 'Sem permissão' })
+  }
+  db.prepare('DELETE FROM messages WHERE conversation_id = ? AND session_id = ?').run(req.params.jid, session_id)
+  db.prepare('DELETE FROM conversations WHERE id = ? AND session_id = ?').run(req.params.jid, session_id)
+  res.json({ ok: true })
+})
+
+// Apaga TODAS as conversas do CRC das empresas do usuário (ou de uma sessão, se session_id) — não afeta o WhatsApp
+app.delete('/api/conversations', (req, res) => {
+  const { session_id } = req.query
+  const tenants = getTenants(req)
+
+  if (session_id) {
+    if (tenants.length) {
+      const s = db.prepare('SELECT tenant_id FROM sessions WHERE id = ?').get(session_id)
+      if (!s || !tenants.includes(s.tenant_id)) return res.status(403).json({ error: 'Sem permissão' })
+    }
+    db.prepare('DELETE FROM messages WHERE session_id = ?').run(session_id)
+    db.prepare('DELETE FROM conversations WHERE session_id = ?').run(session_id)
+    return res.json({ ok: true })
+  }
+
+  // Sem session_id → apaga de todas as sessões das empresas do usuário
+  if (!tenants.length) return res.status(400).json({ error: 'sem empresas' })
+  const sessIds = db.prepare(
+    `SELECT id FROM sessions WHERE tenant_id IN (${tenants.map(() => '?').join(',')})`
+  ).all(...tenants).map(r => r.id)
+  for (const sid of sessIds) {
+    db.prepare('DELETE FROM messages WHERE session_id = ?').run(sid)
+    db.prepare('DELETE FROM conversations WHERE session_id = ?').run(sid)
+  }
+  res.json({ ok: true, sessions: sessIds.length })
+})
+
 /* ── Foto de perfil ────────────────────────────────────────── */
 
 app.get('/api/conversations/:jid/profile-picture', async (req, res) => {

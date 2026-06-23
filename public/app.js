@@ -282,15 +282,6 @@ function selectSession(id) {
 
 /* ── Conversations ────────────────────────────────────────── */
 
-async function loadConversations() {
-  const params = new URLSearchParams()
-  if (state.activeSession)   params.set('session_id', state.activeSession.id)
-  if (state.searchQuery)     params.set('search', state.searchQuery)
-  const res = await fetch(`/api/conversations?${params}`, { headers: TENANT_HEADERS })
-  state.conversations = await res.json()
-  renderConversations()
-}
-
 function renderConversations() {
   const list    = document.getElementById('conversations-list')
   const showTag = !state.activeSession
@@ -322,8 +313,47 @@ function renderConversations() {
           ${c.unread_count > 0 ? `<span class="unread-badge">${c.unread_count}</span>` : ''}
         </div>
       </div>
+      <button class="conv-del btn-danger" title="Apagar esta conversa (só do CRC)"
+        onclick="event.stopPropagation();deleteConversation('${esc(c.id)}','${c.session_id}')">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+      </button>
     </div>`
   }).join('')
+}
+
+// Apaga uma conversa (só do CRC — não afeta o WhatsApp)
+async function deleteConversation(convId, sessionId) {
+  if (!confirm('Apagar esta conversa do CRC?\n\nAs mensagens continuam no WhatsApp normalmente.')) return
+  try {
+    const params = new URLSearchParams({ session_id: sessionId })
+    const res = await fetch(`/api/conversations/${encodeURIComponent(convId)}?${params}`, { method: 'DELETE', headers: TENANT_HEADERS })
+    if (!res.ok) { const e = await res.json().catch(() => ({})); showToast('Erro: ' + (e.error || res.status), 'error'); return }
+    state.conversations = state.conversations.filter(c => !(c.id === convId && c.session_id === sessionId))
+    if (state.activeConversation?.id === convId && state.activeConversation?.session_id === sessionId) {
+      state.activeConversation = null
+      document.getElementById('chat-empty').classList.remove('hidden')
+      document.getElementById('chat-content').classList.add('hidden')
+    }
+    renderConversations()
+  } catch (e) { showToast('Erro de conexão: ' + e.message, 'error') }
+}
+
+// Apaga TODAS as conversas (só do CRC) — respeita o filtro de número selecionado
+async function clearAllConversations() {
+  const escopo = state.activeSession ? `do número "${state.activeSession.name}"` : 'de TODOS os números'
+  if (!confirm(`Apagar todas as conversas ${escopo} no CRC?\n\nAs mensagens continuam no WhatsApp normalmente.`)) return
+  try {
+    const params = new URLSearchParams()
+    if (state.activeSession) params.set('session_id', state.activeSession.id)
+    const res = await fetch(`/api/conversations?${params}`, { method: 'DELETE', headers: TENANT_HEADERS })
+    if (!res.ok) { const e = await res.json().catch(() => ({})); showToast('Erro: ' + (e.error || res.status), 'error'); return }
+    state.conversations = []
+    state.activeConversation = null
+    document.getElementById('chat-empty').classList.remove('hidden')
+    document.getElementById('chat-content').classList.add('hidden')
+    renderConversations()
+    showToast('Conversas apagadas do CRC', 'info')
+  } catch (e) { showToast('Erro de conexão: ' + e.message, 'error') }
 }
 
 function previewIcon(msg) {
@@ -686,8 +716,6 @@ function onSearch(val) {
   searchTimer = setTimeout(loadConversations, 300)
 }
 
-// Permitindo usar searchQuery no loadConversations
-const _origLoad = loadConversations
 async function loadConversations() {
   const params = new URLSearchParams()
   if (state.activeSession) params.set('session_id', state.activeSession.id)
