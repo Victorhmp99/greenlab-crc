@@ -189,8 +189,9 @@ const logger = pino({ level: 'silent' })
 const MAX_QR          = 5          // nº de QRs gerados antes de desistir
 const MAX_RETRIES     = 5          // tentativas de reconexão antes de marcar offline
 const RETRY_BASE_MS   = 4000       // backoff base entre tentativas
-const MEDIA_MAX_AGE_D = 7          // dias — mídia mais antiga que isso é limpa
-const MSG_MAX_AGE_D   = 60         // dias — mensagens mais antigas são podadas
+const MEDIA_MAX_AGE_D   = 5        // dias — mídia mais antiga que isso é limpa
+const MEDIA_MAX_TOTAL_MB = 300     // teto de espaço total de mídia (cap por tamanho)
+const MSG_MAX_AGE_D     = 45       // dias — mensagens mais antigas são podadas
 
 // Diagnóstico do último envio de áudio
 export const lastAudio = { steps: [], error: null, at: null }
@@ -679,27 +680,52 @@ export class SessionManager {
   }
 
   /* ── Limpeza periódica (evita sobrecarga de disco/banco) ──
-     • Remove arquivos de mídia antigos
-     • Poda mensagens antigas do banco
-     • Roda no boot e a cada 12h */
+     1. Remove mídia mais antiga que MEDIA_MAX_AGE_D dias
+     2. Se ainda passar de MEDIA_MAX_TOTAL_MB, apaga a mais antiga até caber (cap por tamanho)
+     3. Poda mensagens antigas do banco
+     4. Recupera espaço do banco (WAL checkpoint + VACUUM)
+     Roda no boot e a cada 6h. */
   cleanup() {
     let mediaRemoved = 0
+
+    // Lista todos os arquivos de mídia com tamanho e idade
+    const files = []
     try {
-      const cutoff = Date.now() - MEDIA_MAX_AGE_D * 86400000
       if (fs.existsSync(MEDIA_DIR)) {
         for (const sessDir of fs.readdirSync(MEDIA_DIR)) {
           const full = path.join(MEDIA_DIR, sessDir)
-          if (!fs.statSync(full).isDirectory()) continue
+          try { if (!fs.statSync(full).isDirectory()) continue } catch (_) { continue }
           for (const file of fs.readdirSync(full)) {
             const fp = path.join(full, file)
             try {
-              if (fs.statSync(fp).mtimeMs < cutoff) { fs.unlinkSync(fp); mediaRemoved++ }
+              const st = fs.statSync(fp)
+              files.push({ fp, size: st.size, mtime: st.mtimeMs })
             } catch (_) {}
           }
         }
       }
+
+      // 1) Remove por idade
+      const cutoff = Date.now() - MEDIA_MAX_AGE_D * 86400000
+      for (const f of files) {
+        if (f.mtime < cutoff) {
+          try { fs.unlinkSync(f.fp); f.deleted = true; mediaRemoved++ } catch (_) {}
+        }
+      }
+
+      // 2) Cap por tamanho total — apaga as mais antigas até ficar abaixo do limite
+      const capBytes = MEDIA_MAX_TOTAL_MB * 1024 * 1024
+      let total = files.filter(f => !f.deleted).reduce((s, f) => s + f.size, 0)
+      if (total > capBytes) {
+        const remaining = files.filter(f => !f.deleted).sort((a, b) => a.mtime - b.mtime)
+        for (const f of remaining) {
+          if (total <= capBytes) break
+          try { fs.unlinkSync(f.fp); total -= f.size; mediaRemoved++ } catch (_) {}
+        }
+      }
     } catch (e) { console.error('[cleanup] mídia:', e.message) }
 
+    // 3) Poda mensagens antigas
     let msgsRemoved = 0
     try {
       const cutoffIso = new Date(Date.now() - MSG_MAX_AGE_D * 86400000).toISOString()
@@ -707,15 +733,19 @@ export class SessionManager {
       msgsRemoved = r.changes ?? 0
     } catch (e) { console.error('[cleanup] mensagens:', e.message) }
 
+    // 4) Recupera espaço do banco (WAL pode crescer muito; VACUUM compacta o arquivo)
+    try { this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)') } catch (_) {}
+    if (msgsRemoved > 0) { try { this.db.exec('VACUUM') } catch (e) { console.error('[cleanup] vacuum:', e.message) } }
+
     if (mediaRemoved || msgsRemoved) {
-      console.log(`🧹 cleanup: ${mediaRemoved} mídias, ${msgsRemoved} mensagens antigas removidas`)
+      console.log(`🧹 cleanup: ${mediaRemoved} mídias, ${msgsRemoved} mensagens removidas`)
     }
   }
 
   /* Inicia a limpeza periódica */
   startCleanupSchedule() {
     this.cleanup()
-    setInterval(() => this.cleanup(), 12 * 60 * 60 * 1000).unref()
+    setInterval(() => this.cleanup(), 6 * 60 * 60 * 1000).unref()
   }
 
   /* ── Reconectar uma sessão existente (após timeout de QR) ── */
