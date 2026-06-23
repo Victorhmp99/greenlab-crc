@@ -1,5 +1,24 @@
-process.on('uncaughtException',  err => console.error('[crash] uncaughtException:', err.message))
-process.on('unhandledRejection', err => console.error('[crash] unhandledRejection:', err?.message ?? err))
+/* ── Silencia o ruído verboso do libsignal ──
+   O libsignal (criptografia do WhatsApp) escreve direto no console, ignorando
+   o logger do Baileys. Isso inundava o stdout com dumps de SessionEntry e
+   travava o event loop (health levava 16s, leads não carregavam).
+   Filtramos só essas linhas de ruído — logs próprios do app passam normal. */
+const _log = console.log.bind(console)
+const _err = console.error.bind(console)
+const NOISE = /Closing session|Closing open session|in favor of incoming|prekey bundle|SessionEntry|Removing old closed session|^\s*(_chains|registrationId|currentRatchet|indexInfo|pubKey|privKey|rootKey|baseKey|chainKey|ephemeralKeyPair)/
+function isNoise(args) {
+  for (const a of args) {
+    if (typeof a === 'string' && NOISE.test(a)) return true
+    // dumps de objeto de sessão do libsignal
+    if (a && typeof a === 'object' && (a._chains || a.currentRatchet || a.indexInfo)) return true
+  }
+  return false
+}
+console.log   = (...a) => { if (!isNoise(a)) _log(...a) }
+console.error = (...a) => { if (!isNoise(a)) _err(...a) }
+
+process.on('uncaughtException',  err => _err('[crash] uncaughtException:', err.message))
+process.on('unhandledRejection', err => _err('[crash] unhandledRejection:', err?.message ?? err))
 
 import express from 'express'
 import { createServer } from 'http'
