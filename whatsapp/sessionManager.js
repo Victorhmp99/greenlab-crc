@@ -5,7 +5,6 @@ import {
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   downloadMediaMessage,
-  Browsers,
 } from '@whiskeysockets/baileys'
 import qrcode from 'qrcode'
 import pino from 'pino'
@@ -347,9 +346,10 @@ export class SessionManager {
         auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
         printQRInTerminal: false,
         logger,
-        // No pareamento por código, o WhatsApp rejeita nomes de "navegador" customizados
-        // (falha silenciosa "não foi possível conectar"). Usar o preset conhecido resolve.
-        browser: pairingPhone ? Browsers.ubuntu('Chrome') : ['CRC Green Lab', 'Chrome', '120.0.0'],
+        // No pareamento por código o WhatsApp rejeita nomes de navegador customizados
+        // ou presets tipo macOS ("não foi possível conectar"). ['Ubuntu','Chrome','20.0.04']
+        // é o valor validado pela comunidade para o fluxo de código funcionar.
+        browser: pairingPhone ? ['Ubuntu', 'Chrome', '20.0.04'] : ['CRC Green Lab', 'Chrome', '120.0.0'],
         generateHighQualityLinkPreview: false,
         syncFullHistory: false,
       })
@@ -357,26 +357,28 @@ export class SessionManager {
       this.sockets.set(sessionId, sock)
       sock.ev.on('creds.update', saveCreds)
 
-      // Fluxo de pareamento por código — o WhatsApp espera um código NOVO a cada
-      // reconexão do handshake (isso é esperado, não é bug: cada socket novo tem
-      // sessão de criptografia própria). O usuário deve sempre digitar o código
-      // mais recente mostrado na tela, não um anterior.
-      if (pairingPhone && !sock.authState.creds.registered) {
-        setTimeout(async () => {
+      sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+        // Pareamento por código: solicitar SÓ quando a conexão chega em 'connecting'
+        // (WhatsApp pronto para receber a solicitação). Pedir antes disso — ex. num
+        // setTimeout fixo — gera um código que o servidor rejeita ao ser digitado
+        // ("não foi possível conectar o dispositivo"). Guardado por pairingRequested
+        // para não pedir de novo em reconexões (que invalidaria o código na tela).
+        if (pairingPhone && connection === 'connecting'
+            && !sock.authState.creds.registered && !this.pairingRequested.has(sessionId)) {
+          this.pairingRequested.add(sessionId)
           try {
-            const raw   = await sock.requestPairingCode(pairingPhone)
-            const code  = raw.match(/.{1,4}/g)?.join('-') || raw
+            const raw  = await sock.requestPairingCode(pairingPhone)
+            const code = raw?.match(/.{1,4}/g)?.join('-') || raw
             this._emit(sessionId, 'pairing-code', { sessionId, code })
             this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
             this._emit(sessionId, 'session:update', { sessionId, status: 'connecting' })
           } catch (e) {
+            this.pairingRequested.delete(sessionId)
             console.error(`[pairing] erro ao gerar código (${name}):`, e.message)
             this._emit(sessionId, 'session:update', { sessionId, status: 'disconnected', reason: 'pairing_error' })
           }
-        }, 1500)  // pequena espera para o socket estabilizar a conexão
-      }
+        }
 
-      sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
         if (qr) {
           // No fluxo de código, ignora o QR (Baileys sempre o gera, mas não é usado aqui)
           if (pairingPhone) return
