@@ -400,8 +400,9 @@ export class SessionManager {
         }
 
         if (connection === 'close') {
-          const code      = lastDisconnect?.error?.output?.statusCode
-          const loggedOut = code === DisconnectReason.loggedOut
+          const code            = lastDisconnect?.error?.output?.statusCode
+          const loggedOut       = code === DisconnectReason.loggedOut
+          const restartRequired = code === DisconnectReason.restartRequired
           this.sockets.delete(sessionId)
 
           if (loggedOut) {
@@ -411,6 +412,16 @@ export class SessionManager {
             try { fs.rmSync(path.join(SESSIONS_DIR, sessionId), { recursive: true, force: true }) } catch (_) {}
             this.db.prepare("UPDATE sessions SET status='disconnected' WHERE id=?").run(sessionId)
             this._emit(sessionId, 'session:update', { sessionId, status: 'disconnected', reason: 'logged_out' })
+            return
+          }
+
+          if (restartRequired) {
+            // Parte NORMAL do fluxo (QR e pareamento por código): o WhatsApp força
+            // esse "restart" logo após o código/QR ser gerado. Precisa reconectar
+            // IMEDIATAMENTE (sem backoff) reaproveitando o mesmo pairingPhone,
+            // senão o código expira antes do celular confirmar.
+            clearTimeout(this.timers.get(sessionId))
+            this.timers.set(sessionId, setTimeout(() => this.connect(sessionId, name, pairingPhone), 300))
             return
           }
 
