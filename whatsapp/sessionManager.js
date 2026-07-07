@@ -358,30 +358,30 @@ export class SessionManager {
       sock.ev.on('creds.update', saveCreds)
 
       sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
-        // Pareamento por código: solicitar SÓ quando a conexão chega em 'connecting'
-        // (WhatsApp pronto para receber a solicitação). Pedir antes disso — ex. num
-        // setTimeout fixo — gera um código que o servidor rejeita ao ser digitado
-        // ("não foi possível conectar o dispositivo"). Guardado por pairingRequested
-        // para não pedir de novo em reconexões (que invalidaria o código na tela).
-        if (pairingPhone && connection === 'connecting'
-            && !sock.authState.creds.registered && !this.pairingRequested.has(sessionId)) {
-          this.pairingRequested.add(sessionId)
-          try {
-            const raw  = await sock.requestPairingCode(pairingPhone)
-            const code = raw?.match(/.{1,4}/g)?.join('-') || raw
-            this._emit(sessionId, 'pairing-code', { sessionId, code })
-            this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
-            this._emit(sessionId, 'session:update', { sessionId, status: 'connecting' })
-          } catch (e) {
-            this.pairingRequested.delete(sessionId)
-            console.error(`[pairing] erro ao gerar código (${name}):`, e.message)
-            this._emit(sessionId, 'session:update', { sessionId, status: 'disconnected', reason: 'pairing_error' })
-          }
-        }
-
         if (qr) {
-          // No fluxo de código, ignora o QR (Baileys sempre o gera, mas não é usado aqui)
-          if (pairingPhone) return
+          // Pareamento por código: pedir o código quando o PRIMEIRO qr é emitido.
+          // O evento qr só dispara APÓS o handshake do WebSocket completar — é o
+          // sinal confiável de que o socket já aceita enviar a solicitação. Pedir
+          // antes disso (ex. no evento 'connecting') falha com "Connection Closed",
+          // e um setTimeout fixo gera código que o servidor rejeita ao digitar.
+          // Guardado por pairingRequested para pedir só uma vez (qr se repete).
+          if (pairingPhone) {
+            if (!sock.authState.creds.registered && !this.pairingRequested.has(sessionId)) {
+              this.pairingRequested.add(sessionId)
+              try {
+                const raw  = await sock.requestPairingCode(pairingPhone)
+                const code = raw?.match(/.{1,4}/g)?.join('-') || raw
+                this._emit(sessionId, 'pairing-code', { sessionId, code })
+                this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
+                this._emit(sessionId, 'session:update', { sessionId, status: 'connecting' })
+              } catch (e) {
+                this.pairingRequested.delete(sessionId)
+                console.error(`[pairing] erro ao gerar código (${name}):`, e.message)
+                this._emit(sessionId, 'session:update', { sessionId, status: 'disconnected', reason: 'pairing_error' })
+              }
+            }
+            return  // no fluxo de código, não trata o qr como QR normal
+          }
 
           const n = (this.qrCounts.get(sessionId) || 0) + 1
           this.qrCounts.set(sessionId, n)
