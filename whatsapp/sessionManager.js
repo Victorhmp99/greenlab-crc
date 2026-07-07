@@ -5,6 +5,7 @@ import {
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   downloadMediaMessage,
+  Browsers,
 } from '@whiskeysockets/baileys'
 import qrcode from 'qrcode'
 import pino from 'pino'
@@ -344,7 +345,9 @@ export class SessionManager {
         auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
         printQRInTerminal: false,
         logger,
-        browser: ['CRC Green Lab', 'Chrome', '120.0.0'],
+        // No pareamento por código, o WhatsApp rejeita nomes de "navegador" customizados
+        // (falha silenciosa "não foi possível conectar"). Usar o preset conhecido resolve.
+        browser: pairingPhone ? Browsers.ubuntu('Chrome') : ['CRC Green Lab', 'Chrome', '120.0.0'],
         generateHighQualityLinkPreview: false,
         syncFullHistory: false,
       })
