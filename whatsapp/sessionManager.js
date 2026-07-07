@@ -357,11 +357,11 @@ export class SessionManager {
       this.sockets.set(sessionId, sock)
       sock.ev.on('creds.update', saveCreds)
 
-      // Fluxo de pareamento por código — solicita o código UMA ÚNICA VEZ por tentativa.
-      // O WhatsApp reconecta o socket várias vezes durante o handshake (código 515);
-      // pedir um código novo a cada reconexão invalida o que o usuário está digitando.
-      if (pairingPhone && !sock.authState.creds.registered && !this.pairingRequested.has(sessionId)) {
-        this.pairingRequested.add(sessionId)
+      // Fluxo de pareamento por código — o WhatsApp espera um código NOVO a cada
+      // reconexão do handshake (isso é esperado, não é bug: cada socket novo tem
+      // sessão de criptografia própria). O usuário deve sempre digitar o código
+      // mais recente mostrado na tela, não um anterior.
+      if (pairingPhone && !sock.authState.creds.registered) {
         setTimeout(async () => {
           try {
             const raw   = await sock.requestPairingCode(pairingPhone)
@@ -370,7 +370,6 @@ export class SessionManager {
             this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
             this._emit(sessionId, 'session:update', { sessionId, status: 'connecting' })
           } catch (e) {
-            this.pairingRequested.delete(sessionId)
             console.error(`[pairing] erro ao gerar código (${name}):`, e.message)
             this._emit(sessionId, 'session:update', { sessionId, status: 'disconnected', reason: 'pairing_error' })
           }
