@@ -258,6 +258,8 @@ export class SessionManager {
     this.lastSend  = new Map()   // sessionId → timestamp do último envio (anti-ban)
     this.dlActive  = 0           // downloads de mídia simultâneos (anti-sobrecarga)
     this.tenantCache = new Map() // sessionId → tenant_id (evita query no banco a cada evento)
+    this.pairingRequested = new Set() // sessionId — evita pedir código novo a cada reconexão do handshake
+    this.restartCounts = new Map()    // sessionId → nº de restarts (515) durante o pareamento
   }
 
   /* ── Throttle de envio (anti-banimento) ──
@@ -355,8 +357,11 @@ export class SessionManager {
       this.sockets.set(sessionId, sock)
       sock.ev.on('creds.update', saveCreds)
 
-      // Fluxo de pareamento por código — solicita o código assim que o socket abre
-      if (pairingPhone && !sock.authState.creds.registered) {
+      // Fluxo de pareamento por código — solicita o código UMA ÚNICA VEZ por tentativa.
+      // O WhatsApp reconecta o socket várias vezes durante o handshake (código 515);
+      // pedir um código novo a cada reconexão invalida o que o usuário está digitando.
+      if (pairingPhone && !sock.authState.creds.registered && !this.pairingRequested.has(sessionId)) {
+        this.pairingRequested.add(sessionId)
         setTimeout(async () => {
           try {
             const raw   = await sock.requestPairingCode(pairingPhone)
@@ -365,6 +370,7 @@ export class SessionManager {
             this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
             this._emit(sessionId, 'session:update', { sessionId, status: 'connecting' })
           } catch (e) {
+            this.pairingRequested.delete(sessionId)
             console.error(`[pairing] erro ao gerar código (${name}):`, e.message)
             this._emit(sessionId, 'session:update', { sessionId, status: 'disconnected', reason: 'pairing_error' })
           }
@@ -396,6 +402,8 @@ export class SessionManager {
         if (connection === 'open') {
           this.qrCounts.delete(sessionId)
           this.retries.delete(sessionId)
+          this.pairingRequested.delete(sessionId)
+          this.restartCounts.delete(sessionId)
           const phone = '+' + (sock.user?.id?.split(':')[0] || '')
           this.db.prepare('UPDATE sessions SET status=?,phone=? WHERE id=?').run('connected', phone, sessionId)
           this._emit(sessionId, 'session:update', { sessionId, status: 'connected', phone })
@@ -412,6 +420,8 @@ export class SessionManager {
             // Deslogado no celular → limpa credenciais, não tenta reconectar
             this.qrCounts.delete(sessionId)
             this.retries.delete(sessionId)
+            this.pairingRequested.delete(sessionId)
+            this.restartCounts.delete(sessionId)
             try { fs.rmSync(path.join(SESSIONS_DIR, sessionId), { recursive: true, force: true }) } catch (_) {}
             this.db.prepare("UPDATE sessions SET status='disconnected' WHERE id=?").run(sessionId)
             this._emit(sessionId, 'session:update', { sessionId, status: 'disconnected', reason: 'logged_out' })
@@ -422,7 +432,18 @@ export class SessionManager {
             // Parte NORMAL do fluxo (QR e pareamento por código): o WhatsApp força
             // esse "restart" logo após o código/QR ser gerado. Precisa reconectar
             // IMEDIATAMENTE (sem backoff) reaproveitando o mesmo pairingPhone,
-            // senão o código expira antes do celular confirmar.
+            // senão o código expira antes do celular confirmar. Não pede código
+            // novo (pairingRequested já marcado) — só a conexão é refeita.
+            const rc = (this.restartCounts.get(sessionId) || 0) + 1
+            this.restartCounts.set(sessionId, rc)
+            if (rc > 8) {
+              console.log(`⏱️  [${name}] muitos restarts durante pareamento — desistindo`)
+              this.pairingRequested.delete(sessionId)
+              this.restartCounts.delete(sessionId)
+              this.db.prepare("UPDATE sessions SET status='disconnected' WHERE id=?").run(sessionId)
+              this._emit(sessionId, 'session:update', { sessionId, status: 'disconnected', reason: 'pairing_error' })
+              return
+            }
             clearTimeout(this.timers.get(sessionId))
             this.timers.set(sessionId, setTimeout(() => this.connect(sessionId, name, pairingPhone), 300))
             return
@@ -715,6 +736,8 @@ export class SessionManager {
     this.retries.delete(sessionId)
     this.tenantCache.delete(sessionId)
     this.lastSend.delete(sessionId)
+    this.pairingRequested.delete(sessionId)
+    this.restartCounts.delete(sessionId)
     const sock = this.sockets.get(sessionId)
     if (sock) { try { await sock.logout() } catch (_) {} }
     await this._teardownSocket(sessionId)
@@ -796,6 +819,8 @@ export class SessionManager {
   async reconnect(sessionId, name) {
     this.qrCounts.delete(sessionId)
     this.retries.delete(sessionId)
+    this.pairingRequested.delete(sessionId)
+    this.restartCounts.delete(sessionId)
     this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
     this._emit(sessionId, 'session:update', { sessionId, status: 'connecting' })
     await this.connect(sessionId, name)
