@@ -358,3 +358,28 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   .session-actions { display: flex !important; }
   input, textarea, select { font-size: 16px !important; }
 }
+
+/* ── Toggle de método de conexão (QR vs Código) ── */
+.method-toggle {
+  display: flex; gap: 6px; margin-bottom: 4px;
+}
+.method-btn {
+  flex: 1; padding: 8px 10px; border-radius: 8px;
+  background: var(--bg-2); border: 1px solid var(--border);
+  color: var(--text-2); font-size: 12px; cursor: pointer;
+  transition: all .15s;
+}
+.method-btn:hover { border-color: var(--green); color: var(--text); }
+.method-btn.active {
+  background: var(--green-dim); border-color: var(--green); color: var(--green);
+  font-weight: 600;
+}
+
+/* ── Código de pareamento grande e legível ── */
+.pairing-code-display {
+  font-size: 32px; font-weight: 700; letter-spacing: 4px;
+  color: var(--green); background: var(--bg-2);
+  border: 1px solid var(--green); border-radius: 10px;
+  padding: 16px 24px; text-align: center; font-family: monospace;
+  user-select: all;
+}

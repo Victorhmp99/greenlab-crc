@@ -14,7 +14,7 @@
   <div id="lightbox-content"></div>
 </div>
 
-<!-- ══ Modal QR Code ══ -->
+<!-- ══ Modal QR Code / Código de pareamento ══ -->
 <div id="modal-qr" class="modal-overlay hidden">
   <div class="modal-box">
     <div class="modal-header">
@@ -22,15 +22,30 @@
       <button onclick="closeQrModal()" class="modal-close">✕</button>
     </div>
     <div class="modal-body" style="align-items:center;gap:16px;">
-      <p class="text-muted" style="text-align:center">
-        Abra o WhatsApp → <strong>Dispositivos vinculados</strong> → <strong>Vincular dispositivo</strong>
-      </p>
-      <div id="qr-wrapper">
-        <div class="qr-placeholder">
-          <div class="spinner"></div>
-          <span>Aguardando QR Code…</span>
+      <!-- Instruções + QR (método QR code) -->
+      <div id="qr-method-block" style="display:flex;flex-direction:column;align-items:center;gap:16px;width:100%">
+        <p class="text-muted" style="text-align:center">
+          Abra o WhatsApp → <strong>Dispositivos vinculados</strong> → <strong>Vincular dispositivo</strong>
+        </p>
+        <div id="qr-wrapper">
+          <div class="qr-placeholder">
+            <div class="spinner"></div>
+            <span>Aguardando QR Code…</span>
+          </div>
         </div>
       </div>
+
+      <!-- Código de pareamento (método à distância, sem câmera) -->
+      <div id="pairing-method-block" style="display:none;flex-direction:column;align-items:center;gap:16px;width:100%">
+        <p class="text-muted" style="text-align:center">
+          No celular: WhatsApp → <strong>Dispositivos vinculados</strong> → <strong>Vincular com número de telefone</strong> → digite o código abaixo
+        </p>
+        <div id="pairing-code-wrapper" class="qr-placeholder">
+          <div class="spinner"></div>
+          <span>Gerando código…</span>
+        </div>
+      </div>
+
       <p id="qr-session-label" class="text-muted" style="font-size:12px;text-align:center"></p>
     </div>
   </div>
@@ -52,6 +67,28 @@
         <label class="field-label">Empresa</label>
         <select id="input-session-tenant" class="field-input" style="cursor:pointer"></select>
       </div>
+
+      <!-- Método de conexão -->
+      <label class="field-label">Como conectar</label>
+      <div class="method-toggle">
+        <button type="button" id="method-btn-qr" class="method-btn active" onclick="setConnectMethod('qr')">
+          📷 QR Code
+        </button>
+        <button type="button" id="method-btn-code" class="method-btn" onclick="setConnectMethod('code')">
+          🔢 Código (à distância)
+        </button>
+      </div>
+
+      <div id="phone-number-wrap" style="display:none">
+        <label class="field-label">Número do WhatsApp (com DDI + DDD)</label>
+        <input id="input-session-phone" class="field-input" type="tel"
+          placeholder="Ex: 5511999998888"
+          onkeydown="if(event.key==='Enter') addSession()" />
+        <p class="text-muted" style="font-size:11px;margin-top:4px">
+          Só números — código do país (55) + DDD + número, sem espaços ou traços.
+        </p>
+      </div>
+
       <button class="btn-primary" onclick="addSession()">Conectar</button>
     </div>
   </div>

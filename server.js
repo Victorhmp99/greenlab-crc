@@ -138,7 +138,7 @@ app.get('/api/sessions', (req, res) => {
 })
 
 app.post('/api/sessions', async (req, res) => {
-  const { name, tenant_id: bodyTenant } = req.body
+  const { name, tenant_id: bodyTenant, phone_number } = req.body
   const tenants    = getTenants(req)
   const tenant     = bodyTenant || (tenants.length ? tenants[0] : 'default')
   const created_by = getUserId(req)
@@ -156,19 +156,43 @@ app.post('/api/sessions', async (req, res) => {
     return res.status(429).json({ error: `Limite de ${MAX_SESSIONS_PER_TENANT} números por empresa atingido` })
   }
 
+  // Pareamento por código: número precisa ter DDI + DDD + número, só dígitos
+  let pairingPhone = null
+  if (phone_number) {
+    pairingPhone = String(phone_number).replace(/\D/g, '')
+    if (pairingPhone.length < 10 || pairingPhone.length > 15) {
+      return res.status(400).json({ error: 'Número inválido. Use DDI + DDD + número (ex: 5511999998888)' })
+    }
+  }
+
   const id = `session_${Date.now()}`
   db.prepare("INSERT INTO sessions (id, name, status, tenant_id, created_by) VALUES (?, ?, 'connecting', ?, ?)").run(id, name.trim(), tenant, created_by)
-  sm.connect(id, name.trim()).catch(console.error)
+  sm.connect(id, name.trim(), pairingPhone).catch(console.error)
   res.json({ id, name: name.trim(), status: 'connecting', tenant_id: tenant, created_by })
 })
 
-// Reconecta uma sessão existente (após QR expirar / cair)
+// Reconecta uma sessão existente (após QR/código expirar ou cair)
 app.post('/api/sessions/:id/reconnect', async (req, res) => {
   const userId = getUserId(req)
   if (!assertOwner(req.params.id, userId, res)) return
   const s = db.prepare('SELECT name FROM sessions WHERE id = ?').get(req.params.id)
   if (!s) return res.status(404).json({ error: 'Sessão não encontrada' })
-  sm.reconnect(req.params.id, s.name).catch(console.error)
+
+  const { phone_number } = req.body || {}
+  let pairingPhone = null
+  if (phone_number) {
+    pairingPhone = String(phone_number).replace(/\D/g, '')
+    if (pairingPhone.length < 10 || pairingPhone.length > 15) {
+      return res.status(400).json({ error: 'Número inválido. Use DDI + DDD + número (ex: 5511999998888)' })
+    }
+  }
+
+  if (pairingPhone) {
+    db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(req.params.id)
+    sm.connect(req.params.id, s.name, pairingPhone).catch(console.error)
+  } else {
+    sm.reconnect(req.params.id, s.name).catch(console.error)
+  }
   res.json({ ok: true })
 })
 

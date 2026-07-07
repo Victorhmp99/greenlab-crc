@@ -321,8 +321,11 @@ export class SessionManager {
     }
   }
 
-  /* ── Connect ── */
-  async connect(sessionId, name) {
+  /* ── Connect ──
+     pairingPhone (opcional): quando informado, pareia por CÓDIGO (8 dígitos)
+     em vez de QR — pode ser feito 100% à distância, digitando o código no
+     celular em Configurações > Dispositivos conectados > Conectar com número. */
+  async connect(sessionId, name, pairingPhone = null) {
     // Trava: evita connect() concorrente criando sockets duplicados (causa do QR repetindo)
     if (this.connecting.has(sessionId)) return
     this.connecting.add(sessionId)
@@ -349,8 +352,27 @@ export class SessionManager {
       this.sockets.set(sessionId, sock)
       sock.ev.on('creds.update', saveCreds)
 
+      // Fluxo de pareamento por código — solicita o código assim que o socket abre
+      if (pairingPhone && !sock.authState.creds.registered) {
+        setTimeout(async () => {
+          try {
+            const raw   = await sock.requestPairingCode(pairingPhone)
+            const code  = raw.match(/.{1,4}/g)?.join('-') || raw
+            this._emit(sessionId, 'pairing-code', { sessionId, code })
+            this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
+            this._emit(sessionId, 'session:update', { sessionId, status: 'connecting' })
+          } catch (e) {
+            console.error(`[pairing] erro ao gerar código (${name}):`, e.message)
+            this._emit(sessionId, 'session:update', { sessionId, status: 'disconnected', reason: 'pairing_error' })
+          }
+        }, 1500)  // pequena espera para o socket estabilizar a conexão
+      }
+
       sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
         if (qr) {
+          // No fluxo de código, ignora o QR (Baileys sempre o gera, mas não é usado aqui)
+          if (pairingPhone) return
+
           const n = (this.qrCounts.get(sessionId) || 0) + 1
           this.qrCounts.set(sessionId, n)
           // Para de gerar QR após o limite — evita QR infinito na tela e socket preso

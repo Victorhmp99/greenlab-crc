@@ -42,6 +42,7 @@ const state = {
   activeConversation: null,
   pendingFile:        null,
   pendingQrSession:   null,   // sessão cujo QR estamos aguardando (modal aberto)
+  connectMethod:      'qr',   // 'qr' ou 'code' — método escolhido no modal de adicionar
 }
 
 /* ── Socket.io ────────────────────────────────────────────── */
@@ -61,6 +62,20 @@ socket.on('qr', ({ sessionId, qr }) => {
   const sess = state.sessions.find(s => s.id === sessionId)
   document.getElementById('qr-session-label').textContent = sess ? `Número: ${sess.name}` : sessionId
   document.getElementById('qr-wrapper').innerHTML = `<img src="${qr}" width="240" height="240" alt="QR Code" />`
+  document.getElementById('qr-method-block').style.display = 'flex'
+  document.getElementById('pairing-method-block').style.display = 'none'
+  document.getElementById('modal-qr').classList.remove('hidden')
+})
+
+// Código de pareamento à distância (sem câmera) — vincula digitando o código no celular
+socket.on('pairing-code', ({ sessionId, code }) => {
+  if (state.pendingQrSession && sessionId !== state.pendingQrSession) return
+  const sess = state.sessions.find(s => s.id === sessionId)
+  document.getElementById('qr-session-label').textContent = sess ? `Número: ${sess.name}` : sessionId
+  document.getElementById('pairing-code-wrapper').outerHTML =
+    `<div id="pairing-code-wrapper" class="pairing-code-display">${esc(code)}</div>`
+  document.getElementById('qr-method-block').style.display = 'none'
+  document.getElementById('pairing-method-block').style.display = 'flex'
   document.getElementById('modal-qr').classList.remove('hidden')
 })
 
@@ -203,20 +218,58 @@ function renderSessions() {
   `).join('')
 }
 
+// Alterna entre método QR e Código no modal de adicionar número
+function setConnectMethod(method) {
+  state.connectMethod = method
+  document.getElementById('method-btn-qr').classList.toggle('active', method === 'qr')
+  document.getElementById('method-btn-code').classList.toggle('active', method === 'code')
+  document.getElementById('phone-number-wrap').style.display = method === 'code' ? 'block' : 'none'
+}
+
+function openPendingModal(sessionId, name, method) {
+  state.pendingQrSession = sessionId
+  document.getElementById('qr-session-label').textContent = `Número: ${name}`
+  if (method === 'code') {
+    document.getElementById('pairing-code-wrapper').outerHTML =
+      `<div id="pairing-code-wrapper" class="qr-placeholder"><div class="spinner"></div><span>Gerando código…</span></div>`
+    document.getElementById('qr-method-block').style.display = 'none'
+    document.getElementById('pairing-method-block').style.display = 'flex'
+  } else {
+    document.getElementById('qr-wrapper').innerHTML =
+      `<div class="qr-placeholder"><div class="spinner"></div><span>Gerando QR Code…</span></div>`
+    document.getElementById('qr-method-block').style.display = 'flex'
+    document.getElementById('pairing-method-block').style.display = 'none'
+  }
+  document.getElementById('modal-qr').classList.remove('hidden')
+}
+
 async function addSession() {
-  const input    = document.getElementById('input-session-name')
-  const tenantEl = document.getElementById('input-session-tenant')
-  const name     = input.value.trim()
+  const input     = document.getElementById('input-session-name')
+  const tenantEl  = document.getElementById('input-session-tenant')
+  const phoneEl   = document.getElementById('input-session-phone')
+  const name      = input.value.trim()
   if (!name) return
   const tenant_id = tenantEl?.value || AVAILABLE_TENANTS[0]?.id || 'default'
+  const method    = state.connectMethod
+
+  let phone_number = null
+  if (method === 'code') {
+    phone_number = (phoneEl?.value || '').replace(/\D/g, '')
+    if (phone_number.length < 10) {
+      showToast('Digite o número completo com DDI + DDD (ex: 5511999998888)', 'error')
+      return
+    }
+  }
+
   input.value = ''
+  if (phoneEl) phoneEl.value = ''
   closeAddModal()
 
   try {
     const res = await fetch('/api/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
-      body: JSON.stringify({ name, tenant_id }),
+      body: JSON.stringify({ name, tenant_id, phone_number }),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: `Erro ${res.status}` }))
@@ -225,26 +278,38 @@ async function addSession() {
     }
     const sess = await res.json()
     state.sessions.push(sess)
-    state.pendingQrSession = sess.id   // só o QR desta sessão abrirá o modal
     renderSessions()
-
-    document.getElementById('qr-session-label').textContent = `Número: ${name}`
-    document.getElementById('qr-wrapper').innerHTML =
-      `<div class="qr-placeholder"><div class="spinner"></div><span>Gerando QR Code…</span></div>`
-    document.getElementById('modal-qr').classList.remove('hidden')
+    openPendingModal(sess.id, name, method)
   } catch (e) {
     showToast('Erro de conexão: ' + e.message, 'error')
   }
 }
 
 async function reconnectSession(id, name) {
-  state.pendingQrSession = id
-  document.getElementById('qr-session-label').textContent = `Número: ${name}`
-  document.getElementById('qr-wrapper').innerHTML =
-    `<div class="qr-placeholder"><div class="spinner"></div><span>Gerando QR Code…</span></div>`
-  document.getElementById('modal-qr').classList.remove('hidden')
+  // Pergunta o método de reconexão — permite reconectar à distância via código
+  const useCode = confirm(
+    'Reconectar por CÓDIGO (à distância, sem escanear QR)?\n\n' +
+    'OK = Código de pareamento (digite no celular)\nCancelar = QR Code (padrão)'
+  )
+
+  let phone_number = null
+  if (useCode) {
+    const raw = prompt('Digite o número do WhatsApp com DDI + DDD (ex: 5511999998888):')
+    if (raw === null) return
+    phone_number = raw.replace(/\D/g, '')
+    if (phone_number.length < 10) {
+      showToast('Número inválido. Use DDI + DDD + número.', 'error')
+      return
+    }
+  }
+
+  openPendingModal(id, name, useCode ? 'code' : 'qr')
   try {
-    const res = await fetch(`/api/sessions/${id}/reconnect`, { method: 'POST', headers: TENANT_HEADERS })
+    const res = await fetch(`/api/sessions/${id}/reconnect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
+      body: JSON.stringify({ phone_number }),
+    })
     if (!res.ok) { const e = await res.json().catch(() => ({})); showToast('Erro: ' + (e.error || res.status), 'error') }
   } catch (e) { showToast('Erro de conexão: ' + e.message, 'error') }
 }
@@ -738,6 +803,8 @@ function openAddModal() {
   wrap.style.display = AVAILABLE_TENANTS.length > 1 ? 'flex' : 'none'
   wrap.style.flexDirection = 'column'
   wrap.style.gap = '4px'
+
+  setConnectMethod('qr')  // sempre reabre no método padrão (QR)
 
   document.getElementById('modal-add').classList.remove('hidden')
   setTimeout(() => document.getElementById('input-session-name').focus(), 50)
