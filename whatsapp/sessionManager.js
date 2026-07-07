@@ -288,6 +288,22 @@ export class SessionManager {
     else        this.io.emit(event, payload)
   }
 
+  /* ── Diagnóstico: pergunta ao WhatsApp o JID canônico de um número ──
+     Usa qualquer socket já conectado. Retorna o formato exato que o WhatsApp
+     usa internamente (essencial p/ pareamento no Brasil, por causa do 9º dígito). */
+  async lookupNumber(phone) {
+    const digits = String(phone).replace(/\D/g, '')
+    let sock = null
+    for (const s of this.sockets.values()) { if (s?.user?.id) { sock = s; break } }
+    if (!sock) return { error: 'nenhuma sessão conectada para consultar' }
+    try {
+      const res = await sock.onWhatsApp(digits)
+      return { input: digits, result: res }
+    } catch (e) {
+      return { error: e.message }
+    }
+  }
+
   /* ── Encerra e remove o socket de uma sessão (sem apagar credenciais) ── */
   async _teardownSocket(sessionId) {
     clearTimeout(this.timers.get(sessionId))

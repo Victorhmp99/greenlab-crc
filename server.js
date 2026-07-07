@@ -128,6 +128,12 @@ function assertOwner(sessionId, userId, res) {
   return true
 }
 
+/* ── Diagnóstico temporário: JID canônico de um número (protegido por secret) ── */
+app.get('/api/_debug/lookup', async (req, res) => {
+  const out = await sm.lookupNumber(req.query.phone || '')
+  res.json(out)
+})
+
 /* ── Sessions ─────────────────────────────────────────────── */
 
 app.get('/api/sessions', (req, res) => {
