@@ -371,6 +371,7 @@ export class SessionManager {
               try {
                 const raw  = await sock.requestPairingCode(pairingPhone)
                 const code = raw?.match(/.{1,4}/g)?.join('-') || raw
+                console.log(`🔑 [${name}] código de pareamento gerado: ${code}`)
                 this._emit(sessionId, 'pairing-code', { sessionId, code })
                 this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
                 this._emit(sessionId, 'session:update', { sessionId, status: 'connecting' })
