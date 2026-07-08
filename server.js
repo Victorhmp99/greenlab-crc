@@ -143,6 +143,27 @@ app.get('/api/sessions', (req, res) => {
   res.json(db.prepare(`SELECT * FROM sessions WHERE 1=1${filter} ORDER BY tenant_id, created_at`).all(...params))
 })
 
+/* Normaliza número p/ pareamento: valida dígitos e consulta o WhatsApp pelo
+   formato canônico (resolve o 9º dígito brasileiro — ex: 5561 9 8179-3632
+   vira 556181793632). Se não houver sessão conectada p/ consultar, usa como veio. */
+async function normalizePairingPhone(phone_number) {
+  if (!phone_number) return { phone: null }
+  const digits = String(phone_number).replace(/\D/g, '')
+  if (digits.length < 10 || digits.length > 15) {
+    return { error: 'Número inválido. Use DDI + DDD + número (ex: 5511999998888)' }
+  }
+  try {
+    const lk = await sm.lookupNumber(digits)
+    const hit = lk?.result?.find(r => r.exists && r.jid)
+    if (hit) {
+      const canonical = hit.jid.split('@')[0].split(':')[0]
+      if (canonical !== digits) console.log(`[pairing] número normalizado: ${digits} → ${canonical}`)
+      return { phone: canonical }
+    }
+  } catch (_) {}
+  return { phone: digits }
+}
+
 app.post('/api/sessions', async (req, res) => {
   const { name, tenant_id: bodyTenant, phone_number } = req.body
   const tenants    = getTenants(req)
@@ -162,14 +183,10 @@ app.post('/api/sessions', async (req, res) => {
     return res.status(429).json({ error: `Limite de ${MAX_SESSIONS_PER_TENANT} números por empresa atingido` })
   }
 
-  // Pareamento por código: número precisa ter DDI + DDD + número, só dígitos
-  let pairingPhone = null
-  if (phone_number) {
-    pairingPhone = String(phone_number).replace(/\D/g, '')
-    if (pairingPhone.length < 10 || pairingPhone.length > 15) {
-      return res.status(400).json({ error: 'Número inválido. Use DDI + DDD + número (ex: 5511999998888)' })
-    }
-  }
+  // Pareamento por código: valida e normaliza p/ o formato canônico do WhatsApp
+  const norm = await normalizePairingPhone(phone_number)
+  if (norm.error) return res.status(400).json({ error: norm.error })
+  const pairingPhone = norm.phone
 
   const id = `session_${Date.now()}`
   db.prepare("INSERT INTO sessions (id, name, status, tenant_id, created_by) VALUES (?, ?, 'connecting', ?, ?)").run(id, name.trim(), tenant, created_by)
@@ -185,13 +202,9 @@ app.post('/api/sessions/:id/reconnect', async (req, res) => {
   if (!s) return res.status(404).json({ error: 'Sessão não encontrada' })
 
   const { phone_number } = req.body || {}
-  let pairingPhone = null
-  if (phone_number) {
-    pairingPhone = String(phone_number).replace(/\D/g, '')
-    if (pairingPhone.length < 10 || pairingPhone.length > 15) {
-      return res.status(400).json({ error: 'Número inválido. Use DDI + DDD + número (ex: 5511999998888)' })
-    }
-  }
+  const norm = await normalizePairingPhone(phone_number)
+  if (norm.error) return res.status(400).json({ error: norm.error })
+  const pairingPhone = norm.phone
 
   if (pairingPhone) {
     db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(req.params.id)
