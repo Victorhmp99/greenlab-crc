@@ -53,7 +53,7 @@ app.use((_req, res, next) => {
   next()
 })
 
-app.use(express.json({ limit: '1mb' }))
+app.use(express.json({ limit: '8mb' }))  // 8mb: import de credenciais (pareamento local) manda ~30 arquivos em base64
 // index:false → não serve index.html automático, deixa o catch-all injetar o secret
 app.use(express.static(path.join(__dirname, 'public'), { index: false }))
 app.use('/media', express.static(MEDIA_DIR, { maxAge: '7d' }))
@@ -205,6 +205,38 @@ app.post('/api/sessions', async (req, res) => {
   db.prepare("INSERT INTO sessions (id, name, status, tenant_id, created_by) VALUES (?, ?, 'connecting', ?, ?)").run(id, name.trim(), tenant, created_by)
   sm.connect(id, name.trim(), pairingPhone).catch(console.error)
   res.json({ id, name: name.trim(), status: 'connecting', tenant_id: tenant, created_by })
+})
+
+/* Import de credenciais pareadas localmente.
+   O WhatsApp rejeita pareamento por CÓDIGO vindo de IP de datacenter (anti-abuso;
+   QR não é afetado). Fluxo: `node pair-local.mjs` roda no PC (IP residencial),
+   completa o pareamento e envia os arquivos da sessão pra cá — a nuvem só mantém
+   a conexão, o que funciona normalmente em datacenter. */
+app.post('/api/sessions/import', async (req, res) => {
+  const { name, tenant_id, files } = req.body || {}
+  const created_by = getUserId(req)
+  if (!name?.trim())                          return res.status(400).json({ error: 'Nome obrigatório' })
+  if (!files || typeof files !== 'object')    return res.status(400).json({ error: 'files obrigatório' })
+  const entries = Object.entries(files)
+  if (!entries.length || entries.length > 200) return res.status(400).json({ error: 'files inválido' })
+  if (!files['creds.json'])                    return res.status(400).json({ error: 'creds.json ausente' })
+  for (const [fname] of entries) {
+    if (!/^[\w.-]+\.json$/.test(fname)) return res.status(400).json({ error: `nome de arquivo inválido: ${fname}` })
+  }
+
+  const tenant = tenant_id || 'default'
+  const id = `session_${Date.now()}`
+  const dir = path.join(SESSIONS_DIR, id)
+  fs.mkdirSync(dir, { recursive: true })
+  for (const [fname, b64] of entries) {
+    fs.writeFileSync(path.join(dir, fname), Buffer.from(String(b64), 'base64'))
+  }
+
+  db.prepare("INSERT INTO sessions (id, name, status, tenant_id, created_by) VALUES (?, ?, 'connecting', ?, ?)")
+    .run(id, name.trim(), tenant, created_by)
+  sm.connect(id, name.trim()).catch(console.error)
+  console.log(`📥 [${name.trim()}] credenciais importadas (pareamento local) — conectando`)
+  res.json({ id, name: name.trim(), status: 'connecting', tenant_id: tenant })
 })
 
 // Reconecta uma sessão existente (após QR/código expirar ou cair)
