@@ -19,19 +19,36 @@ const SECRET     = process.env.CRC_SECRET || 'f9bf1847495f262c9cba37d06b08ff0fbb
 const TENANT_ID  = process.env.CRC_TENANT || '8320459c-6a66-4b35-8e98-a237209ade7b'   // Green Hub
 const USER_ID    = process.env.CRC_USER   || '08282ed4-a085-47e5-9a97-295e7123b6e6'
 
-const numero = (process.argv[2] || '').replace(/\D/g, '')
-const nome   = process.argv[3] || 'Novo numero'
+let numero = (process.argv[2] || '').replace(/\D/g, '')
+const nome  = process.argv[3] || 'Novo numero'
 if (numero.length < 10) {
   console.log('Uso: node pair-local.mjs <numero com DDI+DDD> "<nome>"')
   console.log('Ex.: node pair-local.mjs 5561981793632 "Recepcao"')
   process.exit(1)
 }
 
+// Normaliza pro formato canônico do WhatsApp (9º dígito BR) consultando a produção.
+// Código gerado pro formato errado = celular rejeita na hora.
+try {
+  const r = await fetch(`${PROD_URL}/api/_debug/lookup?phone=${numero}`, { headers: { 'x-crc-secret': SECRET } })
+  const lk = await r.json()
+  const hit = lk?.result?.find(x => x.exists && x.jid)
+  if (hit) {
+    const canonical = hit.jid.split('@')[0].split(':')[0]
+    if (canonical !== numero) { console.log(`(número normalizado: ${numero} → ${canonical})`); numero = canonical }
+  } else if (lk?.result) {
+    console.log('⚠️  Esse número não parece ter WhatsApp. Confira e tente de novo.')
+    process.exit(1)
+  }
+} catch (_) { /* sem lookup, segue com o que veio */ }
+
 const logger = pino({ level: 'silent' })
 const dir = './pair_tmp_' + Date.now()
 fs.mkdirSync(dir, { recursive: true })
 
 console.log(`\n📱 Pareando ${numero} (${nome})...\n`)
+
+let finishing = false
 
 async function connect() {
   const { state, saveCreds } = await useMultiFileAuthState(dir)
@@ -63,6 +80,7 @@ async function connect() {
     }
 
     if (connection === 'open') {
+      finishing = true
       console.log('✅ Pareado! Enviando credenciais pra produção...')
       await new Promise(r => setTimeout(r, 3000))   // deixa as chaves terminarem de salvar
       try { sock.end?.(undefined) } catch (_) {}
@@ -90,6 +108,7 @@ async function connect() {
     }
 
     if (connection === 'close') {
+      if (finishing) return   // encerramento proposital após parear — não reconectar
       const c = lastDisconnect?.error?.output?.statusCode
       if (c === DisconnectReason.restartRequired) {
         // Passo normal após o celular aceitar o código — reconecta pra concluir
