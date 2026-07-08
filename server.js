@@ -221,7 +221,10 @@ app.post('/api/sessions/import', async (req, res) => {
   if (!entries.length || entries.length > 5000) return res.status(400).json({ error: 'files inválido' })
   if (!files['creds.json'])                    return res.status(400).json({ error: 'creds.json ausente' })
   for (const [fname] of entries) {
-    if (!/^[\w.-]+\.json$/.test(fname)) return res.status(400).json({ error: `nome de arquivo inválido: ${fname}` })
+    // permite letras/números/._-@: (v7 usa nomes como tctoken-123@lid.json); barra/caminho, não
+    if (!/^[\w.@:-]+\.json$/.test(fname) || fname.includes('..')) {
+      return res.status(400).json({ error: `nome de arquivo inválido: ${fname}` })
+    }
   }
 
   const tenant = tenant_id || 'default'
