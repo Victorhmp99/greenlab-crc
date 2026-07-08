@@ -4,13 +4,15 @@
   "type": "module",
   "description": "Central de Relacionamento com o Cliente — Green Lab",
   "main": "server.js",
-  "engines": { "node": ">=24.0.0" },
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "start": "node --experimental-sqlite server.js",
     "dev": "node --watch server.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "6.17.16",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
     "audio-decode": "^2.2.3",
     "dotenv": "^17.4.2",
     "express": "^4.21.2",

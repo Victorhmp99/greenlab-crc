@@ -448,10 +448,13 @@ export class SessionManager {
 
           if (restartRequired) {
             // Parte NORMAL do fluxo (QR e pareamento por código): o WhatsApp força
-            // esse "restart" logo após o código/QR ser gerado. Precisa reconectar
-            // IMEDIATAMENTE (sem backoff) reaproveitando o mesmo pairingPhone,
-            // senão o código expira antes do celular confirmar. Não pede código
-            // novo (pairingRequested já marcado) — só a conexão é refeita.
+            // esse "restart". Reconecta IMEDIATAMENTE (sem backoff).
+            // CRÍTICO: a validade do código é amarrada às chaves do socket que o
+            // gerou. Se o pareamento ainda NÃO completou (creds não registradas),
+            // o socket novo tem chaves novas → o código na tela ficou MORTO e
+            // qualquer digitação falha na hora. Limpa a trava p/ o socket novo
+            // gerar um código FRESCO (a tela atualiza sozinha via evento).
+            if (!sock.authState.creds.registered) this.pairingRequested.delete(sessionId)
             const rc = (this.restartCounts.get(sessionId) || 0) + 1
             this.restartCounts.set(sessionId, rc)
             if (rc > 8) {
@@ -473,15 +476,21 @@ export class SessionManager {
           if (r > MAX_RETRIES) {
             console.log(`❌ [${name}] reconexão falhou ${MAX_RETRIES}x — offline`)
             this.retries.delete(sessionId)
+            this.pairingRequested.delete(sessionId)
             this.db.prepare("UPDATE sessions SET status='disconnected' WHERE id=?").run(sessionId)
             this._emit(sessionId, 'session:update', { sessionId, status: 'disconnected', reason: 'max_retries' })
             return
           }
+          // Pareamento em andamento que caiu: o código na tela morreu junto com o
+          // socket (chaves novas na reconexão). Libera a trava p/ gerar código novo
+          // e repassa o pairingPhone — a tela troca o código automaticamente.
+          const pairingPending = pairingPhone && !sock.authState.creds.registered
+          if (pairingPending) this.pairingRequested.delete(sessionId)
           const delay = Math.min(RETRY_BASE_MS * r, 30000)  // backoff até 30s
           this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
           this._emit(sessionId, 'session:update', { sessionId, status: 'connecting' })
           clearTimeout(this.timers.get(sessionId))
-          this.timers.set(sessionId, setTimeout(() => this.connect(sessionId, name), delay))
+          this.timers.set(sessionId, setTimeout(() => this.connect(sessionId, name, pairingPending ? pairingPhone : null), delay))
         }
       })
 

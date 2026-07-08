@@ -29,7 +29,7 @@ import path from 'path'
 import fs from 'fs'
 import { initDB } from './database/db.js'
 import { SessionManager } from './whatsapp/sessionManager.js'
-import { PORT, SECRET, ORIGIN, IS_PROD, MEDIA_DIR } from './config.js'
+import { PORT, SECRET, ORIGIN, IS_PROD, MEDIA_DIR, SESSIONS_DIR } from './config.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -69,6 +69,19 @@ const upload = multer({
 
 const db = initDB()
 const sm = new SessionManager(db, io)
+
+// Backup das credenciais no boot, ANTES de reconectar — rede de segurança:
+// se uma atualização corromper/derrubar sessões, dá pra restaurar sem re-parear
+try {
+  const src = SESSIONS_DIR
+  const bak = src + '_backup'
+  if (fs.existsSync(src)) {
+    fs.rmSync(bak, { recursive: true, force: true })
+    fs.cpSync(src, bak, { recursive: true })
+    console.log('[backup] credenciais copiadas para sessions_backup')
+  }
+} catch (e) { console.error('[backup] falhou (não-fatal):', e.message) }
+
 sm.restoreAll().catch(console.error)
 sm.startCleanupSchedule()   // limpeza periódica de mídia/mensagens antigas
 
