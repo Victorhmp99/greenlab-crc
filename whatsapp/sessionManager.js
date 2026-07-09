@@ -677,21 +677,32 @@ export class SessionManager {
       lastAudio.steps = []; lastAudio.error = null; lastAudio.at = new Date().toISOString()
       logAudio(`recebido mime=${mime} size=${buffer.length}B ffmpeg=${ffmpegPath}`)
       try {
-        // Converte para MP3 — formato de áudio mais aceito universalmente pelo WhatsApp
-        const mp3 = await convertToMp3(buffer)
-        const mp3Buffer = fs.readFileSync(mp3.path)
-        audioTmpFile = mp3.path
-        logAudio(`convertido MP3 ${mp3Buffer.length}B ${mp3.seconds}s`)
+        // Mensagem de VOZ (bolinha de áudio): OGG/Opus + ptt. Funciona na Baileys v7
+        // (na v6 o upload chegava como "áudio indisponível" — bug corrigido na v7).
+        const ogg = await convertToOggFile(buffer)
+        const oggBuffer = fs.readFileSync(ogg.path)
+        audioTmpFile = ogg.path
+        logAudio(`convertido OGG/ptt ${oggBuffer.length}B ${ogg.seconds}s`)
         msgContent = {
-          audio:    mp3Buffer,
-          mimetype: 'audio/mpeg',
-          ptt:      false,
-          seconds:  mp3.seconds,
+          audio:    oggBuffer,
+          mimetype: 'audio/ogg; codecs=opus',
+          ptt:      true,
+          seconds:  ogg.seconds,
         }
       } catch (e1) {
-        lastAudio.error = 'conversao: ' + e1.message
-        logAudio('CONVERSAO FALHOU: ' + e1.message)
-        msgContent = { document: buffer, mimetype: mime, fileName: originalname || `audio.${getExt(mime)}` }
+        logAudio('OGG falhou (' + e1.message + ') — tentando MP3')
+        try {
+          // Fallback comprovado: MP3 chega como arquivo de áudio (player), reproduz OK
+          const mp3 = await convertToMp3(buffer)
+          const mp3Buffer = fs.readFileSync(mp3.path)
+          audioTmpFile = mp3.path
+          logAudio(`convertido MP3 ${mp3Buffer.length}B ${mp3.seconds}s`)
+          msgContent = { audio: mp3Buffer, mimetype: 'audio/mpeg', ptt: false, seconds: mp3.seconds }
+        } catch (e2) {
+          lastAudio.error = 'conversao: ' + e2.message
+          logAudio('CONVERSAO FALHOU: ' + e2.message)
+          msgContent = { document: buffer, mimetype: mime, fileName: originalname || `audio.${getExt(mime)}` }
+        }
       }
     } else {
       msgContent = { document: buffer, mimetype: mime, fileName: originalname }
@@ -717,9 +728,9 @@ export class SessionManager {
     // Salva o arquivo localmente para o chat mostrar
     const dir = path.join(MEDIA_DIR, sessionId)
     fs.mkdirSync(dir, { recursive: true })
-    // Para áudio convertido, salva o arquivo convertido (mp3); senão o buffer original
+    // Para áudio convertido, salva o arquivo convertido (ogg ou mp3); senão o buffer original
     const isConvAudio = mediaType === 'audio' && audioTmpFile
-    const filename    = `${msgId}.${isConvAudio ? 'mp3' : getExt(mime)}`
+    const filename    = `${msgId}.${isConvAudio ? path.extname(audioTmpFile).slice(1) : getExt(mime)}`
     if (isConvAudio) {
       try { fs.copyFileSync(audioTmpFile, path.join(dir, filename)) }
       catch (_) { fs.writeFileSync(path.join(dir, filename), buffer) }
