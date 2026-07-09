@@ -14,10 +14,20 @@ function isNoise(args) {
   }
   return false
 }
+// Baileys v7: o libsignal também loga por console.info/warn/debug — filtrar todos
 console.log   = (...a) => { if (!isNoise(a)) _log(...a) }
 console.error = (...a) => { if (!isNoise(a)) _err(...a) }
+console.info  = (...a) => { if (!isNoise(a)) _log(...a) }
+console.warn  = (...a) => { if (!isNoise(a)) _err(...a) }
+console.debug = (...a) => { if (!isNoise(a)) _log(...a) }
 
-process.on('uncaughtException',  err => _err('[crash] uncaughtException:', err.message))
+// Exceção não tratada = estado imprevisível. Sair deixa o Railway reiniciar
+// limpo (as sessões reconectam sozinhas no boot) — melhor que rodar zumbi,
+// como no incidente do disco cheio.
+process.on('uncaughtException', err => {
+  _err('[crash] uncaughtException:', err.message, '\n', err.stack)
+  setTimeout(() => process.exit(1), 500).unref()   // 500ms pro log ser enviado
+})
 process.on('unhandledRejection', err => _err('[crash] unhandledRejection:', err?.message ?? err))
 
 import express from 'express'
@@ -53,7 +63,10 @@ app.use((_req, res, next) => {
   next()
 })
 
-app.use(express.json({ limit: '16mb' }))  // 16mb: import de credenciais (pareamento local) — sessão nova tem ~3k arquivos (~6MB em base64)
+// Limite global de 1mb; o import de credenciais (única rota com payload grande)
+// é pulado aqui e usa parser próprio de 16mb na declaração da rota
+const jsonSmall = express.json({ limit: '1mb' })
+app.use((req, res, next) => req.path === '/api/sessions/import' ? next() : jsonSmall(req, res, next))
 // index:false → não serve index.html automático, deixa o catch-all injetar o secret
 app.use(express.static(path.join(__dirname, 'public'), { index: false }))
 app.use('/media', express.static(MEDIA_DIR, { maxAge: '7d' }))
@@ -212,7 +225,7 @@ app.post('/api/sessions', async (req, res) => {
    QR não é afetado). Fluxo: `node pair-local.mjs` roda no PC (IP residencial),
    completa o pareamento e envia os arquivos da sessão pra cá — a nuvem só mantém
    a conexão, o que funciona normalmente em datacenter. */
-app.post('/api/sessions/import', async (req, res) => {
+app.post('/api/sessions/import', express.json({ limit: '16mb' }), async (req, res) => {
   const { name, tenant_id, files } = req.body || {}
   const created_by = getUserId(req)
   if (!name?.trim())                          return res.status(400).json({ error: 'Nome obrigatório' })
