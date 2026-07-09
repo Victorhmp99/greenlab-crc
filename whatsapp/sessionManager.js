@@ -146,12 +146,18 @@ function convertToOggFile(buffer) {
       const tmpOut = path.join(os.tmpdir(), `crc_aout_${id}.ogg`)
       try {
         fs.writeFileSync(tmpIn, buffer)
-        // -fflags +genpts e re-timestamp resolvem o WebM sem duração
+        // -fflags +genpts: WebM do MediaRecorder vem sem duração
+        // -avoid_negative_ts make_zero: gravação do mic gera timestamp inicial
+        //   NEGATIVO (start: -0.0005) — o player do WhatsApp rejeita e mostra
+        //   "áudio indisponível"; zera o início
+        // -map_metadata -1: remove metadados herdados (ex: language=eng)
         const r = spawnSync(ffmpegPath, [
           '-y',
           '-fflags', '+genpts',
           '-i', tmpIn,
           '-vn',
+          '-map_metadata', '-1',
+          '-avoid_negative_ts', 'make_zero',
           '-c:a', 'libopus', '-b:a', '64k',
           '-ar', '48000', '-ac', '1',
           '-application', 'voip',
