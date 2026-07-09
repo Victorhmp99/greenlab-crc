@@ -375,6 +375,21 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   font-weight: 600;
 }
 
+/* ── Diálogos (confirmação/prompt estilizados) ── */
+.dialog-box { max-width: 380px; width: calc(100vw - 48px); animation: fadeInUp .18s ease; }
+.dialog-msg { color: var(--text-2); font-size: 13px; line-height: 1.55; margin: 0; }
+.dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
+.dialog-btn {
+  padding: 8px 16px; border-radius: 8px; font-size: 13px; cursor: pointer;
+  border: 1px solid var(--border); transition: all .15s;
+}
+.dialog-muted   { background: var(--bg-2); color: var(--text-2); }
+.dialog-muted:hover { color: var(--text); border-color: var(--text-2); }
+.dialog-primary { background: var(--green); color: #06130b; border-color: var(--green); font-weight: 600; }
+.dialog-primary:hover { filter: brightness(1.1); }
+.dialog-danger  { background: #b91c1c; color: #fff; border-color: #b91c1c; font-weight: 600; }
+.dialog-danger:hover { background: #dc2626; }
+
 /* ── Código de pareamento grande e legível ── */
 .pairing-code-display {
   font-size: 32px; font-weight: 700; letter-spacing: 4px;

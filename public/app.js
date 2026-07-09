@@ -287,23 +287,36 @@ async function addSession() {
 
 async function reconnectSession(id, name) {
   // Pergunta o método de reconexão — permite reconectar à distância via código
-  const useCode = confirm(
-    'Reconectar por CÓDIGO (à distância, sem escanear QR)?\n\n' +
-    'OK = Código de pareamento (digite no celular)\nCancelar = QR Code (padrão)'
-  )
+  const method = await showDialog({
+    title: `Reconectar ${name}`,
+    message: 'Como deseja reconectar este número?',
+    buttons: [
+      { label: '📷 QR Code', value: 'qr', style: 'muted' },
+      { label: '🔢 Código (à distância)', value: 'code', style: 'primary' },
+    ],
+  })
+  if (method === null) return
 
   let phone_number = null
-  if (useCode) {
-    const raw = prompt('Digite o número do WhatsApp com DDI + DDD (ex: 5511999998888):')
+  if (method === 'code') {
+    const raw = await showDialog({
+      title: 'Número do WhatsApp',
+      message: 'Com DDI + DDD, ex: 5511999998888.\nO 9º dígito é corrigido automaticamente.',
+      input: { type: 'tel', placeholder: '5561999998888' },
+      buttons: [
+        { label: 'Cancelar', value: null, style: 'muted' },
+        { label: 'Gerar código', style: 'primary' },
+      ],
+    })
     if (raw === null) return
-    phone_number = raw.replace(/\D/g, '')
+    phone_number = String(raw).replace(/\D/g, '')
     if (phone_number.length < 10) {
       showToast('Número inválido. Use DDI + DDD + número.', 'error')
       return
     }
   }
 
-  openPendingModal(id, name, useCode ? 'code' : 'qr')
+  openPendingModal(id, name, method)
   try {
     const res = await fetch(`/api/sessions/${id}/reconnect`, {
       method: 'POST',
@@ -315,7 +328,7 @@ async function reconnectSession(id, name) {
 }
 
 async function removeSession(id) {
-  if (!confirm('Desconectar este número? A sessão será encerrada.')) return
+  if (!(await showConfirm('Desconectar número', 'A sessão será encerrada e removida do CRC.\nVocê pode conectar de novo quando quiser.', 'Desconectar', true))) return
   await fetch(`/api/sessions/${id}`, { method: 'DELETE', headers: TENANT_HEADERS })
   state.sessions      = state.sessions.filter(s => s.id !== id)
   state.conversations = state.conversations.filter(c => c.session_id !== id)
@@ -325,7 +338,7 @@ async function removeSession(id) {
 }
 
 async function clearConversations(sessionId) {
-  if (!confirm('Limpar todas as conversas desta sessão no CRC?\n\nAs mensagens continuam no WhatsApp normalmente.')) return
+  if (!(await showConfirm('Limpar conversas', 'Limpar todas as conversas desta sessão no CRC?\nAs mensagens continuam no WhatsApp normalmente.', 'Limpar', true))) return
   await fetch(`/api/sessions/${sessionId}/conversations`, { method: 'DELETE', headers: TENANT_HEADERS })
   state.conversations = state.conversations.filter(c => c.session_id !== sessionId)
   if (state.activeConversation?.session_id === sessionId) {
@@ -388,7 +401,7 @@ function renderConversations() {
 
 // Apaga uma conversa (só do CRC — não afeta o WhatsApp)
 async function deleteConversation(convId, sessionId) {
-  if (!confirm('Apagar esta conversa do CRC?\n\nAs mensagens continuam no WhatsApp normalmente.')) return
+  if (!(await showConfirm('Apagar conversa', 'Apagar esta conversa do CRC?\nAs mensagens continuam no WhatsApp normalmente.', 'Apagar', true))) return
   try {
     const params = new URLSearchParams({ session_id: sessionId })
     const res = await fetch(`/api/conversations/${encodeURIComponent(convId)}?${params}`, { method: 'DELETE', headers: TENANT_HEADERS })
@@ -406,7 +419,7 @@ async function deleteConversation(convId, sessionId) {
 // Apaga TODAS as conversas (só do CRC) — respeita o filtro de número selecionado
 async function clearAllConversations() {
   const escopo = state.activeSession ? `do número "${state.activeSession.name}"` : 'de TODOS os números'
-  if (!confirm(`Apagar todas as conversas ${escopo} no CRC?\n\nAs mensagens continuam no WhatsApp normalmente.`)) return
+  if (!(await showConfirm('Apagar todas as conversas', `Apagar todas as conversas ${escopo} no CRC?\nAs mensagens continuam no WhatsApp normalmente.`, 'Apagar tudo', true))) return
   try {
     const params = new URLSearchParams()
     if (state.activeSession) params.set('session_id', state.activeSession.id)
@@ -651,13 +664,13 @@ async function sendPendingFile() {
     const res = await fetch(`/api/conversations/${encodeURIComponent(conv.id)}/media`, {
       method: 'POST', headers: TENANT_HEADERS, body: fd,
     })
-    if (!res.ok) { const e = await res.json(); alert('Erro: ' + e.error) }
+    if (!res.ok) { const e = await res.json(); showToast('Erro ao enviar: ' + e.error, 'error') }
     else {
       document.getElementById('msg-input').value = ''
       autoResize(document.getElementById('msg-input'))
     }
   } catch (e) {
-    alert('Erro: ' + e.message)
+    showToast('Erro de conexão: ' + e.message, 'error')
   } finally {
     cancelFile()
     document.getElementById('msg-input').focus()
@@ -886,6 +899,50 @@ function formatBytes(b) {
 }
 
 /* ── Toast ────────────────────────────────────────────────── */
+
+/* ── Diálogos estilizados (substituem alert/confirm/prompt nativos) ── */
+function showDialog({ title, message, input = null, buttons }) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div')
+    overlay.className = 'modal-overlay'
+    overlay.innerHTML = `
+      <div class="modal-box dialog-box">
+        <div class="modal-header"><span>${esc(title)}</span></div>
+        <div class="modal-body">
+          ${message ? `<p class="dialog-msg">${esc(message).replace(/\n/g, '<br>')}</p>` : ''}
+          ${input ? `<input id="dialog-input" class="field-input" type="${input.type || 'text'}"
+                       placeholder="${esc(input.placeholder || '')}" value="${esc(input.value || '')}" />` : ''}
+          <div class="dialog-actions">
+            ${buttons.map((b, i) => `<button class="dialog-btn dialog-${b.style || 'muted'}" data-i="${i}">${esc(b.label)}</button>`).join('')}
+          </div>
+        </div>
+      </div>`
+    const done = v => { overlay.remove(); resolve(v) }
+    overlay.addEventListener('click', e => {
+      if (e.target === overlay) return done(null)
+      const btn = e.target.closest('.dialog-btn')
+      if (!btn) return
+      const b = buttons[+btn.dataset.i]
+      const inputVal = overlay.querySelector('#dialog-input')?.value ?? null
+      done(b.value !== undefined ? b.value : inputVal)
+    })
+    document.body.appendChild(overlay)
+    const inp = overlay.querySelector('#dialog-input')
+    if (inp) { inp.focus(); inp.addEventListener('keydown', e => { if (e.key === 'Enter') done(inp.value) }) }
+  })
+}
+
+// Confirmação simples: resolve true só se o usuário confirmar
+async function showConfirm(title, message, confirmLabel = 'Confirmar', danger = false) {
+  const r = await showDialog({
+    title, message,
+    buttons: [
+      { label: 'Cancelar', value: false, style: 'muted' },
+      { label: confirmLabel, value: true, style: danger ? 'danger' : 'primary' },
+    ],
+  })
+  return r === true
+}
 
 function showToast(msg, type = 'info') {
   const toast = document.createElement('div')
