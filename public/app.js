@@ -687,6 +687,15 @@ let recordingConv   = null   // conversa capturada no INÍCIO da gravação
 async function startRecording(e) {
   if (e) e.preventDefault()
 
+  // Anti-zumbi: se sobrou um gravador ativo de um clique anterior (ex: soltou o
+  // mouse FORA do botão e o stop nunca disparou), ele continuaria despejando
+  // pedaços SEM cabeçalho na próxima gravação — o WebM chegava "começando no
+  // meio" e a conversão falhava. Mata qualquer gravador/stream anterior.
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    try { mediaRecorder.ondataavailable = null; mediaRecorder.onstop = null; mediaRecorder.stop() } catch (_) {}
+  }
+  recordingStream?.getTracks().forEach(t => t.stop())
+
   // Captura a conversa AGORA — antes de qualquer await
   recordingConv = state.activeConversation
   if (!recordingConv) return
@@ -702,35 +711,30 @@ async function startRecording(e) {
     const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
     const mimeType = candidates.find(m => MediaRecorder.isTypeSupported(m))
 
-    mediaRecorder = mimeType
-      ? new MediaRecorder(recordingStream, { mimeType })
-      : new MediaRecorder(recordingStream)
-    audioChunks   = []
+    const rec    = mimeType ? new MediaRecorder(recordingStream, { mimeType }) : new MediaRecorder(recordingStream)
+    const chunks = []          // LOCAL desta gravação — zumbi nenhum escreve aqui
+    const stream = recordingStream
+    const conv   = recordingConv
+    mediaRecorder = rec
 
-    mediaRecorder.ondataavailable = ev => { if (ev.data.size > 0) audioChunks.push(ev.data) }
+    rec.ondataavailable = ev => { if (ev.data.size > 0) chunks.push(ev.data) }
 
-    mediaRecorder.onstop = async () => {
+    rec.onstop = async () => {
       // usa o mime REAL do gravador (Safari pode divergir do pedido)
-      const actualMime = mediaRecorder.mimeType || mimeType || 'audio/webm'
-      const blob = new Blob(audioChunks, { type: actualMime })
+      const actualMime = rec.mimeType || mimeType || 'audio/webm'
+      const blob = new Blob(chunks, { type: actualMime })
       const ext  = actualMime.includes('mp4') ? 'm4a' : actualMime.includes('ogg') ? 'ogg' : 'webm'
       const file = new File([blob], `audio_${Date.now()}.${ext}`, { type: actualMime })
 
       console.log('[rec] gravação finalizada | size:', blob.size, '| mime:', actualMime,
-                  '| conv:', recordingConv?.id, '| session:', recordingConv?.session_id)
+                  '| conv:', conv?.id, '| session:', conv?.session_id)
 
-      if (blob.size < 500) {
-        console.warn('[rec] áudio muito curto, ignorando')
-        recordingStream?.getTracks().forEach(t => t.stop())
-        return
-      }
-
-      // Usa recordingConv capturado no início — não depende de state.activeConversation
-      await sendAudioFile(file, recordingConv)
-      recordingStream?.getTracks().forEach(t => t.stop())
+      stream.getTracks().forEach(t => t.stop())
+      if (blob.size < 500) { console.warn('[rec] áudio muito curto, ignorando'); return }
+      await sendAudioFile(file, conv)
     }
 
-    mediaRecorder.start(250)  // coleta dados a cada 250ms
+    rec.start(250)  // coleta dados a cada 250ms
     document.getElementById('mic-btn').classList.add('recording')
   } catch (err) {
     console.error('[rec] erro:', err)
@@ -743,9 +747,15 @@ function stopRecording(e) {
   if (e) e.preventDefault()
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop()
-    document.getElementById('mic-btn').classList.remove('recording')
   }
+  document.getElementById('mic-btn').classList.remove('recording')
 }
+
+// Rede de segurança: soltar o botão FORA dele (arrastou o dedo/mouse) também
+// encerra a gravação — sem isso o gravador virava zumbi e corrompia a próxima
+document.addEventListener('mouseup',    () => stopRecording())
+document.addEventListener('touchend',   () => stopRecording())
+document.addEventListener('touchcancel',() => stopRecording())
 
 async function sendAudioFile(file, conv) {
   if (!conv) { console.error('[audio] conv is null'); return }
