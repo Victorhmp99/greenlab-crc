@@ -125,11 +125,24 @@ function makeWaveform(len = 64) {
 
 // Converte para OGG/Opus. O WebM do navegador NÃO tem duração nos metadados,
 // então re-encodamos forçando a escrita da duração e medimos pelo "time=" final.
+/* Detecta o formato REAL do áudio pelos bytes iniciais (navegadores mentem no mime:
+   Safari/iPad rotula como webm mas grava MP4). Retorna extensão ou null. */
+function sniffAudioFormat(buffer) {
+  if (buffer.length < 12) return null
+  if (buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3) return 'webm'
+  if (buffer.slice(4, 8).toString('ascii') === 'ftyp') return 'mp4'
+  if (buffer.slice(0, 4).toString('ascii') === 'OggS') return 'ogg'
+  if (buffer.slice(0, 3).toString('ascii') === 'ID3' || (buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0)) return 'mp3'
+  if (buffer.slice(0, 4).toString('ascii') === 'RIFF') return 'wav'
+  return null
+}
+
 function convertToOggFile(buffer) {
   return new Promise((resolve, reject) => {
     setImmediate(() => {
       const id     = `${Date.now()}_${Math.random().toString(36).slice(2)}`
-      const tmpIn  = path.join(os.tmpdir(), `crc_ain_${id}`)
+      const sniff  = sniffAudioFormat(buffer)
+      const tmpIn  = path.join(os.tmpdir(), `crc_ain_${id}${sniff ? '.' + sniff : ''}`)
       const tmpOut = path.join(os.tmpdir(), `crc_aout_${id}.ogg`)
       try {
         fs.writeFileSync(tmpIn, buffer)
@@ -675,7 +688,8 @@ export class SessionManager {
       mediaType = 'audio'
       body      = '[Áudio 🎵]'
       lastAudio.steps = []; lastAudio.error = null; lastAudio.at = new Date().toISOString()
-      logAudio(`recebido mime=${mime} size=${buffer.length}B ffmpeg=${ffmpegPath}`)
+      const sniff = sniffAudioFormat(buffer)
+      logAudio(`recebido mime=${mime} formato-real=${sniff || 'desconhecido'} magic=${buffer.slice(0, 12).toString('hex')} size=${buffer.length}B`)
       try {
         // Mensagem de VOZ (bolinha de áudio): OGG/Opus + ptt. Funciona na Baileys v7
         // (na v6 o upload chegava como "áudio indisponível" — bug corrigido na v7).

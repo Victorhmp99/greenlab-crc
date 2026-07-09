@@ -696,23 +696,27 @@ async function startRecording(e) {
   try {
     recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true })
 
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : MediaRecorder.isTypeSupported('audio/webm')
-        ? 'audio/webm'
-        : 'audio/ogg'
+    // Ordem de preferência por navegador: Chrome/Firefox gravam WebM/Opus;
+    // Safari/iPad (WebKit) só grava MP4/AAC — e mente se pedirem webm.
+    // Sem formato suportado, deixa o navegador escolher o padrão dele.
+    const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
+    const mimeType = candidates.find(m => MediaRecorder.isTypeSupported(m))
 
-    mediaRecorder = new MediaRecorder(recordingStream, { mimeType })
+    mediaRecorder = mimeType
+      ? new MediaRecorder(recordingStream, { mimeType })
+      : new MediaRecorder(recordingStream)
     audioChunks   = []
 
     mediaRecorder.ondataavailable = ev => { if (ev.data.size > 0) audioChunks.push(ev.data) }
 
     mediaRecorder.onstop = async () => {
-      const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType })
-      const ext  = mimeType.includes('webm') ? 'webm' : 'ogg'
-      const file = new File([blob], `audio_${Date.now()}.${ext}`, { type: mimeType })
+      // usa o mime REAL do gravador (Safari pode divergir do pedido)
+      const actualMime = mediaRecorder.mimeType || mimeType || 'audio/webm'
+      const blob = new Blob(audioChunks, { type: actualMime })
+      const ext  = actualMime.includes('mp4') ? 'm4a' : actualMime.includes('ogg') ? 'ogg' : 'webm'
+      const file = new File([blob], `audio_${Date.now()}.${ext}`, { type: actualMime })
 
-      console.log('[rec] gravação finalizada | size:', blob.size, '| mime:', mimeType,
+      console.log('[rec] gravação finalizada | size:', blob.size, '| mime:', actualMime,
                   '| conv:', recordingConv?.id, '| session:', recordingConv?.session_id)
 
       if (blob.size < 500) {
