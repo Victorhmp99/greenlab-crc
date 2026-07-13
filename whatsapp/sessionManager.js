@@ -654,6 +654,7 @@ export class SessionManager {
     const ts    = new Date().toISOString()
 
     try {
+      this._ensureConversation(jid, sessionId)
       this.db.prepare(`
         INSERT OR IGNORE INTO messages(id,conversation_id,session_id,from_me,body,timestamp)
         VALUES(?,?,?,1,?,?)
@@ -762,6 +763,7 @@ export class SessionManager {
     if (audioTmpFile) { try { fs.unlinkSync(audioTmpFile) } catch (_) {} }
 
     try {
+      this._ensureConversation(jid, sessionId)
       this.db.prepare(`
         INSERT OR IGNORE INTO messages(id,conversation_id,session_id,from_me,body,media_type,media_url,timestamp)
         VALUES(?,?,?,1,?,?,?,?)
@@ -909,6 +911,16 @@ export class SessionManager {
     const sock = this.sockets.get(sessionId)
     if (!sock) throw new Error('Sessão não conectada. Verifique o QR Code.')
     return sock
+  }
+
+  /* Garante que a conversa existe antes de enviar — sem isso, mandar mensagem
+     pra um número que nunca escreveu (ex: primeiro contato automático via
+     webhook) grava a mensagem mas a conversa não aparece na lista do CRC. */
+  _ensureConversation(jid, sessionId) {
+    const phone = jid.split('@')[0]
+    this.db.prepare(`
+      INSERT OR IGNORE INTO conversations(id, session_id, phone) VALUES (?, ?, ?)
+    `).run(jid, sessionId, phone)
   }
 
   _getConversation(jid, sessionId) {

@@ -429,6 +429,35 @@ app.post('/api/conversations/:jid/messages', async (req, res) => {
   }
 })
 
+/* Envia mensagem para um número NOVO (nunca escreveu antes) — pensado para
+   automações externas (ex: Make/Zapier disparando 1ª mensagem quando um lead
+   preenche formulário). Aceita telefone em qualquer formato (corrige o 9º
+   dígito sozinho) em vez de exigir o JID já formatado. */
+app.post('/api/send-message', async (req, res) => {
+  const { session_id, phone, message } = req.body || {}
+  if (!session_id || !phone || !message?.trim()) {
+    return res.status(400).json({ error: 'session_id, phone e message são obrigatórios' })
+  }
+  if (message.length > 10000) return res.status(400).json({ error: 'Mensagem muito longa (máx. 10.000 caracteres)' })
+
+  const tenants = getTenants(req)
+  if (tenants.length) {
+    const s = db.prepare('SELECT tenant_id FROM sessions WHERE id = ?').get(session_id)
+    if (!s || !tenants.includes(s.tenant_id)) return res.status(403).json({ error: 'Sem permissão' })
+  }
+
+  const norm = await normalizePairingPhone(phone)
+  if (norm.error) return res.status(400).json({ error: norm.error })
+
+  try {
+    await sm.sendMessage(session_id, `${norm.phone}@s.whatsapp.net`, message.trim())
+    res.json({ ok: true, phone: norm.phone })
+  } catch (e) {
+    console.error('[send-message] ERRO:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 /* ── Envio de mídia ────────────────────────────────────────── */
 
 app.post('/api/conversations/:jid/media', upload.single('file'), async (req, res) => {
