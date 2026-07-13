@@ -154,8 +154,20 @@ function assertOwner(sessionId, userId, res) {
   return true
 }
 
-/* ── Diagnóstico temporário: JID canônico de um número (protegido por secret) ── */
-app.get('/api/_debug/lookup', async (req, res) => {
+/* Verifica se um número tem WhatsApp e devolve o formato canônico (corrige
+   9º dígito). Usado antes de mandar mensagem pra contato novo. */
+app.get('/api/check-number', async (req, res) => {
+  const digits = String(req.query.phone || '').replace(/\D/g, '')
+  if (digits.length < 10 || digits.length > 15) {
+    return res.status(400).json({ error: 'Número inválido' })
+  }
+  const out = await sm.lookupNumber(digits)
+  if (out.error) return res.status(400).json({ error: out.error })
+  const hit = out.result?.find(r => r.exists && r.jid)
+  res.json({ exists: !!hit, phone: hit ? hit.jid.split('@')[0].split(':')[0] : digits })
+})
+
+app.get('/api/_debug/lookup', async (req, res) => {   // mantido por compatibilidade
   const out = await sm.lookupNumber(req.query.phone || '')
   res.json(out)
 })

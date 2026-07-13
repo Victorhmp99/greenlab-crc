@@ -972,5 +972,99 @@ function showToast(msg, type = 'info') {
   setTimeout(() => toast.remove(), 4000)
 }
 
+/* ── Novo contato (mandar msg pra número que nunca escreveu) ── */
+let ncCheckedRaw     = null   // dígitos brutos que foram verificados (o que o usuário digitou)
+let ncCheckedCanonical = null // formato canônico devolvido pelo servidor (o que é enviado de fato)
+
+function openNewContactModal() {
+  const sel = document.getElementById('nc-session')
+  const connected = state.sessions.filter(s => s.status === 'connected')
+  sel.innerHTML = connected.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')
+    || '<option value="">Nenhum número conectado</option>'
+
+  document.getElementById('nc-phone').value   = ''
+  document.getElementById('nc-message').value = ''
+  document.getElementById('nc-status').innerHTML = ''
+  ncCheckedRaw = null
+  ncCheckedCanonical = null
+  updateNcButton('idle')
+
+  document.getElementById('modal-new-contact').classList.remove('hidden')
+  setTimeout(() => document.getElementById('nc-phone').focus(), 50)
+}
+function closeNewContactModal() { document.getElementById('modal-new-contact').classList.add('hidden') }
+
+function updateNcButton(mode) {
+  const btn = document.getElementById('nc-submit-btn')
+  if (mode === 'checking') { btn.textContent = 'Verificando…'; btn.disabled = true }
+  else if (mode === 'ready') { btn.textContent = 'Enviar mensagem'; btn.disabled = false }
+  else if (mode === 'sending') { btn.textContent = 'Enviando…'; btn.disabled = true }
+  else { btn.textContent = 'Verificar e enviar'; btn.disabled = false }
+}
+
+// Verifica se o número existe no WhatsApp; se sim, já habilita o envio direto
+async function checkNewContactNumber() {
+  const raw = document.getElementById('nc-phone').value
+  const digits = raw.replace(/\D/g, '')
+  const statusEl = document.getElementById('nc-status')
+  if (digits.length < 10) { statusEl.innerHTML = `<span style="color:#ef4444;font-size:12px">Número incompleto</span>`; return }
+
+  updateNcButton('checking')
+  statusEl.innerHTML = `<span class="text-muted" style="font-size:12px">Verificando no WhatsApp…</span>`
+  try {
+    const res = await fetch(`/api/check-number?phone=${digits}`, { headers: TENANT_HEADERS })
+    const data = await res.json()
+    if (!res.ok) { statusEl.innerHTML = `<span style="color:#ef4444;font-size:12px">${esc(data.error || 'Erro')}</span>`; updateNcButton('idle'); return }
+    if (!data.exists) {
+      statusEl.innerHTML = `<span style="color:#ef4444;font-size:12px">✕ Esse número não tem WhatsApp</span>`
+      ncCheckedRaw = null
+      ncCheckedCanonical = null
+      updateNcButton('idle')
+      return
+    }
+    ncCheckedRaw = digits
+    ncCheckedCanonical = data.phone
+    statusEl.innerHTML = `<span style="color:var(--green);font-size:12px">✓ Número válido no WhatsApp</span>`
+    updateNcButton('ready')
+  } catch (e) {
+    statusEl.innerHTML = `<span style="color:#ef4444;font-size:12px">Erro de conexão: ${esc(e.message)}</span>`
+    updateNcButton('idle')
+  }
+}
+
+// Botão único: 1º clique verifica, 2º clique (já verificado) envia
+async function sendToNewContact() {
+  const sessionId = document.getElementById('nc-session').value
+  const message    = document.getElementById('nc-message').value.trim()
+  const rawPhone   = document.getElementById('nc-phone').value.replace(/\D/g, '')
+
+  if (!sessionId) { showToast('Nenhum número conectado disponível', 'error'); return }
+  if (!message)   { showToast('Digite uma mensagem', 'error'); return }
+
+  // Se o número digitado mudou desde a última verificação, verifica de novo antes de enviar
+  if (ncCheckedRaw === null || ncCheckedRaw !== rawPhone) {
+    if (rawPhone.length < 10) { showToast('Número inválido', 'error'); return }
+    await checkNewContactNumber()
+    return   // só envia no próximo clique, já com o resultado da checagem
+  }
+
+  updateNcButton('sending')
+  try {
+    const res = await fetch('/api/send-message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
+      body: JSON.stringify({ session_id: sessionId, phone: ncCheckedCanonical, message }),
+    })
+    const data = await res.json()
+    if (!res.ok) { showToast('Erro ao enviar: ' + (data.error || res.status), 'error'); updateNcButton('ready'); return }
+    showToast('Mensagem enviada!', 'info')
+    closeNewContactModal()
+    loadConversations()
+  } catch (e) {
+    showToast('Erro de conexão: ' + e.message, 'error')
+    updateNcButton('ready')
+  }
+}
+
 /* ── Start ────────────────────────────────────────────────── */
 init()
