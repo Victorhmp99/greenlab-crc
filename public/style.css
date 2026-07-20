@@ -394,6 +394,15 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   input, textarea, select { font-size: 16px !important; }
 }
 
+/* ── Guia de instalação (usar como app) ── */
+.install-steps {
+  display: flex; flex-direction: column; gap: 10px;
+  padding-left: 20px; margin-top: 4px;
+  color: var(--text); font-size: 13px; line-height: 1.5;
+}
+.install-steps.hidden { display: none; }
+.install-steps li::marker { color: var(--green); font-weight: 700; }
+
 /* ── Toggle de método de conexão (QR vs Código) ── */
 .method-toggle {
   display: flex; gap: 6px; margin-bottom: 4px;

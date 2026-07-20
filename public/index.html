@@ -132,6 +132,46 @@
   </div>
 </div>
 
+<!-- ══ Modal guia de instalação (usar como app / PWA) ══ -->
+<div id="modal-install-guide" class="modal-overlay hidden">
+  <div class="modal-box" style="width:400px">
+    <div class="modal-header">
+      <span>Como usar como app</span>
+      <button onclick="closeInstallGuide()" class="modal-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="text-muted" style="font-size:12px">
+        Instale na tela inicial pra abrir rápido, em tela cheia, igual um app de verdade.
+      </p>
+
+      <div class="method-toggle">
+        <button type="button" id="install-tab-android" class="method-btn active" onclick="setInstallTab('android')">
+          🤖 Android · Chrome
+        </button>
+        <button type="button" id="install-tab-ios" class="method-btn" onclick="setInstallTab('ios')">
+          🍎 iPhone · Safari
+        </button>
+      </div>
+
+      <ol id="install-steps-android" class="install-steps">
+        <li>Abra este link no <strong>Chrome</strong>.</li>
+        <li>Toque nos <strong>três pontinhos ⋮</strong>, no canto superior direito.</li>
+        <li>Toque em <strong>"Instalar app"</strong> (ou "Adicionar à tela inicial").</li>
+        <li>Toque em <strong>"Instalar"</strong> pra confirmar.</li>
+        <li>Pronto — o ícone aparece na tela inicial do celular.</li>
+      </ol>
+
+      <ol id="install-steps-ios" class="install-steps hidden">
+        <li>Abra este link no <strong>Safari</strong> (precisa ser o Safari — outros navegadores do iPhone não instalam app).</li>
+        <li>Toque no ícone de <strong>Compartilhar</strong> (quadrado com uma seta pra cima), na barra de baixo.</li>
+        <li>Role a lista de opções e toque em <strong>"Adicionar à Tela de Início"</strong>.</li>
+        <li>Toque em <strong>"Adicionar"</strong>, no canto superior direito.</li>
+        <li>Pronto — o ícone aparece na tela inicial do celular.</li>
+      </ol>
+    </div>
+  </div>
+</div>
+
 <!-- ══ Login ══ -->
 <div id="login-screen" class="login-screen">
   <div class="login-box">
@@ -166,6 +206,9 @@
     <div class="panel-header">
       <span class="panel-title">Números</span>
       <div style="display:flex;gap:4px">
+        <button class="btn-icon" title="Como instalar o app" onclick="openInstallGuide()">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </button>
         <button class="btn-icon" title="Adicionar número" onclick="openAddModal()">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>

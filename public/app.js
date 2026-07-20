@@ -256,10 +256,42 @@ async function bootFromSession() {
 
   joinTenantRooms()
   await init()
+  maybeShowInstallGuideAutomatically()
 }
 
 async function doLogout() {
   await supabaseClient.auth.signOut()
+}
+
+/* ── Guia de instalação (usar como app / PWA) ──────────────── */
+
+const INSTALL_GUIDE_SEEN_KEY = 'crc-install-guide-seen'
+
+function openInstallGuide()  { document.getElementById('modal-install-guide').classList.remove('hidden') }
+function closeInstallGuide() { document.getElementById('modal-install-guide').classList.add('hidden') }
+
+function setInstallTab(tab) {
+  document.getElementById('install-tab-android').classList.toggle('active', tab === 'android')
+  document.getElementById('install-tab-ios').classList.toggle('active', tab === 'ios')
+  document.getElementById('install-steps-android').classList.toggle('hidden', tab !== 'android')
+  document.getElementById('install-steps-ios').classList.toggle('hidden', tab !== 'ios')
+}
+
+function detectPlatformTab() {
+  return /iPhone|iPad|iPod/.test(navigator.userAgent || '') ? 'ios' : 'android'
+}
+
+// Só aparece sozinho uma vez por aparelho (localStorage), no primeiro login.
+// Se já está rodando instalado (modo standalone), a pessoa já instalou — não mostra.
+function maybeShowInstallGuideAutomatically() {
+  if (localStorage.getItem(INSTALL_GUIDE_SEEN_KEY)) return
+  localStorage.setItem(INSTALL_GUIDE_SEEN_KEY, '1')
+
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true
+  if (isStandalone) return
+
+  setInstallTab(detectPlatformTab())
+  openInstallGuide()
 }
 
 // Reage a logout ou renovação de token em qualquer momento da sessão
