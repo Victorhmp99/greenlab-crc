@@ -294,6 +294,10 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 }
 .btn-icon:hover { color: var(--green); border-color: var(--green); }
 
+/* Botão de ajuda/instalar — precisa se destacar dos outros ícones (touch não tem hover pra revelar o título) */
+.btn-help { color: var(--green); border-color: var(--green-dim); background: var(--green-dim); }
+.btn-help:hover { background: var(--green-glow); }
+
 .btn-danger, .btn-muted {
   width: 22px; height: 22px; border-radius: 6px; border: none;
   background: transparent; color: var(--text-3); cursor: pointer;
