@@ -441,11 +441,17 @@ app.post('/api/conversations/:jid/messages', async (req, res) => {
   }
 })
 
-/* Envia mensagem para um número NOVO (nunca escreveu antes) — pensado para
-   automações externas (ex: Make/Zapier disparando 1ª mensagem quando um lead
-   preenche formulário). Aceita telefone em qualquer formato (corrige o 9º
-   dígito sozinho) em vez de exigir o JID já formatado. */
+/* Envia mensagem para um número NOVO (nunca escreveu antes).
+   PAUSADO 2026-07-17: mandar 1a mensagem pra contato frio via cliente não-oficial
+   (Baileys) é o padrão nº1 que o sistema anti-spam do WhatsApp marca como
+   suspeito — causou "conta em análise" em um número real (VacinaSys) no mesmo
+   dia em que essa rota foi usada. Não reativar sem: throttle sério (ex: 1 msg
+   nova/hora por sessão), aviso explícito de risco na UI, e só pra leads que
+   deram opt-in (nunca número digitado às cegas). Kill-switch via env var. */
 app.post('/api/send-message', async (req, res) => {
+  if (process.env.ENABLE_SEND_TO_NEW_NUMBER !== 'true') {
+    return res.status(503).json({ error: 'Recurso pausado por segurança (risco de banimento). Contate o administrador.' })
+  }
   const { session_id, phone, message } = req.body || {}
   if (!session_id || !phone || !message?.trim()) {
     return res.status(400).json({ error: 'session_id, phone e message são obrigatórios' })
