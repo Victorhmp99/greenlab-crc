@@ -358,6 +358,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 }
 .login-logo { width: 64px; height: 64px; margin-bottom: 10px; }
 .login-box h1 { font-size: 18px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+.login-box form { display: flex; flex-direction: column; width: 100%; }
 .login-box .field-input { margin-top: 14px; }
 .login-box #login-submit { width: 100%; margin-top: 18px; padding: 11px; font-size: 14px; }
 .login-error {
@@ -365,6 +366,18 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   background: rgba(248,113,113,.1); color: #f87171; font-size: 12px; text-align: left;
 }
 .login-error.hidden { display: none; }
+
+/* Campo de senha com botão de mostrar/ocultar */
+.login-password-wrap { position: relative; width: 100%; margin-top: 14px; }
+.login-password-wrap .field-input { margin-top: 0; padding-right: 42px; width: 100%; }
+.login-toggle-pw {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 30px; height: 30px; border-radius: 6px; border: none; background: none;
+  color: var(--text-3); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: color .15s;
+}
+.login-toggle-pw:hover { color: var(--text); }
 
 @keyframes pulse     { 0%,100% { opacity:1; } 50% { opacity:.4; } }
 @keyframes fadeInUp  { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }

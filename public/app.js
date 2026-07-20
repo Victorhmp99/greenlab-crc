@@ -172,6 +172,24 @@ function showLoginScreen(message) {
   else         { errBox.classList.add('hidden') }
 }
 
+// Botão de olho no campo de senha
+function togglePasswordVisibility() {
+  const input       = document.getElementById('login-password')
+  const openIcon    = document.getElementById('pw-eye-open')
+  const closedIcon  = document.getElementById('pw-eye-closed')
+  const showingText = input.type === 'text'
+  input.type = showingText ? 'password' : 'text'
+  openIcon.classList.toggle('hidden', !showingText)
+  closedIcon.classList.toggle('hidden', showingText)
+}
+
+// Envio real de <form> — é o gatilho que faz o navegador oferecer "salvar senha"
+function handleLoginSubmit(event) {
+  event.preventDefault()
+  doLogin()
+  return false
+}
+
 async function doLogin() {
   const email    = document.getElementById('login-email').value.trim()
   const password = document.getElementById('login-password').value
