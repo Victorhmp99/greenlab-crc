@@ -362,7 +362,7 @@ function renderSessions() {
 
   // Botão "+" só aparece se o usuário já criou alguma sessão OU se não há sessões ainda
   const userOwnsAny = state.sessions.some(s => isOwner(s))
-  const addBtn      = document.querySelector('#sessions-panel .panel-header .btn-icon')
+  const addBtn      = document.getElementById('btn-add-session')
   if (addBtn) addBtn.style.display = (userOwnsAny || !state.sessions.length) ? 'flex' : 'none'
 
   // Badge da "Todas" (caixa unificada)
