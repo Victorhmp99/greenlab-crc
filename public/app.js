@@ -43,7 +43,19 @@ const state = {
   pendingFile:        null,
   pendingQrSession:   null,   // sessão cujo QR estamos aguardando (modal aberto)
   connectMethod:      'qr',   // 'qr' ou 'code' — método escolhido no modal de adicionar
+  mobileView:         'sessions', // 'sessions' | 'conversations' | 'chat' — só importa em tela estreita
 }
+
+/* ── Navegação mobile (estilo WhatsApp: uma tela por vez) ────
+   Em desktop (CSS sem o @media de 768px) isso não tem efeito visual —
+   as 3 colunas continuam aparecendo juntas como sempre apareceram. */
+function setMobileView(view) {
+  state.mobileView = view
+  document.getElementById('app').dataset.mobileView = view
+}
+function backToSessions()      { setMobileView('sessions') }
+function backToConversations() { setMobileView('conversations') }
+setMobileView(state.mobileView)
 
 /* ── Socket.io ────────────────────────────────────────────── */
 
@@ -345,6 +357,7 @@ async function clearConversations(sessionId) {
     state.activeConversation = null
     document.getElementById('chat-empty').classList.remove('hidden')
     document.getElementById('chat-content').classList.add('hidden')
+    if (state.mobileView === 'chat') setMobileView('conversations')
   }
   renderConversations()
   showToast('Conversas limpas com sucesso', 'info')
@@ -356,6 +369,7 @@ function selectSession(id) {
   document.getElementById('conv-panel-title').textContent = state.activeSession ? state.activeSession.name : 'Conversas'
   renderSessions()
   loadConversations()
+  setMobileView('conversations')
 }
 
 /* ── Conversations ────────────────────────────────────────── */
@@ -411,6 +425,7 @@ async function deleteConversation(convId, sessionId) {
       state.activeConversation = null
       document.getElementById('chat-empty').classList.remove('hidden')
       document.getElementById('chat-content').classList.add('hidden')
+      if (state.mobileView === 'chat') setMobileView('conversations')
     }
     renderConversations()
   } catch (e) { showToast('Erro de conexão: ' + e.message, 'error') }
@@ -429,6 +444,7 @@ async function clearAllConversations() {
     state.activeConversation = null
     document.getElementById('chat-empty').classList.remove('hidden')
     document.getElementById('chat-content').classList.add('hidden')
+    if (state.mobileView === 'chat') setMobileView('conversations')
     renderConversations()
     showToast('Conversas apagadas do CRC', 'info')
   } catch (e) { showToast('Erro de conexão: ' + e.message, 'error') }
@@ -450,6 +466,7 @@ async function openConversation(convId, sessionId) {
   const conv = state.conversations.find(c => c.id === convId && c.session_id === sessionId)
   if (!conv) return
   state.activeConversation = conv
+  setMobileView('chat')
 
   document.getElementById('chat-empty').classList.add('hidden')
   document.getElementById('chat-content').classList.remove('hidden')

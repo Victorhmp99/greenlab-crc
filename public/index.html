@@ -2,8 +2,16 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0a0a" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="SDR WhatsApp" />
   <title>CRC — Green Lab</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
@@ -150,7 +158,12 @@
   <!-- Lista de conversas -->
   <section id="conversations-panel">
     <div class="panel-header">
-      <span class="panel-title" id="conv-panel-title">Conversas</span>
+      <div style="display:flex;align-items:center;gap:8px;min-width:0">
+        <button class="mobile-back-btn" onclick="backToSessions()" title="Voltar">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <span class="panel-title" id="conv-panel-title">Conversas</span>
+      </div>
       <div style="display:flex;gap:4px">
         <!-- Novo contato DESATIVADO 2026-07-17: enviar 1a mensagem pra numero que nunca
              conversou, via cliente nao-oficial, e um padrao classico que o WhatsApp
@@ -177,6 +190,9 @@
 
     <div id="chat-content" class="hidden">
       <div id="chat-header">
+        <button class="mobile-back-btn" onclick="backToConversations()" title="Voltar">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
         <div class="chat-avatar-wrap">
           <img id="chat-avatar-img" src="" class="chat-avatar-img hidden" />
           <div id="chat-avatar-initials" class="chat-avatar">?</div>
@@ -219,5 +235,12 @@
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="/app.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').catch(() => {})
+    })
+  }
+</script>
 </body>
 </html>

@@ -398,3 +398,42 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   padding: 16px 24px; text-align: center; font-family: monospace;
   user-select: all;
 }
+
+/* ══════════════════════════════════════════════════════════════
+   MOBILE — navegação estilo WhatsApp (uma tela por vez)
+   Tudo aqui dentro do @media SÓ afeta telas estreitas.
+   O desktop (acima de 768px) permanece exatamente como já era.
+   ══════════════════════════════════════════════════════════════ */
+
+/* Botão de voltar — só existe visualmente dentro do media query abaixo */
+.mobile-back-btn {
+  display: none;
+  width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0;
+  align-items: center; justify-content: center;
+  background: none; border: none; color: var(--text-2); cursor: pointer;
+  transition: color .15s, background .15s;
+}
+.mobile-back-btn:hover { color: var(--green); background: var(--bg-2); }
+
+@media (max-width: 768px) {
+  #app {
+    grid-template-columns: 1fr;
+    /* var(--tg-viewport-...) fallback: respeita a área segura do PWA instalado (notch/status bar) */
+    height: 100dvh;
+  }
+
+  /* Por padrão nenhum painel aparece — o atributo data-mobile-view em #app decide qual mostrar */
+  #sessions-panel, #conversations-panel, #chat-panel { display: none; width: 100%; border-right: none; }
+
+  #app[data-mobile-view="sessions"]      #sessions-panel      { display: flex; }
+  #app[data-mobile-view="conversations"] #conversations-panel { display: flex; }
+  #app[data-mobile-view="chat"]          #chat-panel           { display: flex; }
+
+  .mobile-back-btn { display: flex; }
+
+  /* Bolhas de mensagem podem usar mais largura numa tela estreita */
+  .msg-bubble { max-width: 82%; }
+
+  /* Modais ocupam a largura útil da tela, sem colar nas bordas */
+  .modal-box { width: calc(100vw - 32px); max-width: 380px; }
+}
