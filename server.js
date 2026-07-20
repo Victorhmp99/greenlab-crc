@@ -33,18 +33,19 @@ process.on('unhandledRejection', err => _err('[crash] unhandledRejection:', err?
 import express from 'express'
 import { createServer } from 'http'
 import { Server } from 'socket.io'
+import { createClient } from '@supabase/supabase-js'
 import { fileURLToPath } from 'url'
 import multer from 'multer'
 import path from 'path'
 import fs from 'fs'
 import { initDB } from './database/db.js'
 import { SessionManager } from './whatsapp/sessionManager.js'
-import { PORT, SECRET, ORIGIN, IS_PROD, MEDIA_DIR, SESSIONS_DIR } from './config.js'
+import { PORT, ORIGIN, IS_PROD, MEDIA_DIR, SESSIONS_DIR, SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-if (IS_PROD && !SECRET) {
-  console.warn('AVISO: CRC_SECRET não definido — API rodando sem autenticação!')
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  console.warn('AVISO: SUPABASE_URL/SUPABASE_ANON_KEY não definidos — login não vai funcionar!')
 }
 
 const app        = express()
@@ -98,28 +99,79 @@ try {
 sm.restoreAll().catch(console.error)
 sm.startCleanupSchedule()   // limpeza periódica de mídia/mensagens antigas
 
+/* ── Autenticação (Supabase — mesma conta do CRM) ─────────────
+   O acesso de cada pessoa a cada empresa vem de user_memberships,
+   consultado com o próprio token dela (RLS decide o que ela pode ver).
+   Cache curto evita bater no Supabase a cada request. */
+
+const authCache = new Map()          // access_token -> { authUser, expiresAt }
+const AUTH_CACHE_TTL_MS = 60_000
+
+function supabaseForToken(token) {
+  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: `Bearer ${token}` } },
+  })
+}
+
+async function resolveAuthUser(token) {
+  if (!token) return null
+
+  const cached = authCache.get(token)
+  if (cached && cached.expiresAt > Date.now()) return cached.authUser
+
+  const sb = supabaseForToken(token)
+  const { data: userData, error: userErr } = await sb.auth.getUser(token)
+  if (userErr || !userData?.user) { authCache.delete(token); return null }
+
+  const { data: memberships, error: memErr } = await sb
+    .from('user_memberships')
+    .select('tenant_id')
+    .eq('user_id', userData.user.id)
+    .eq('active', true)
+  if (memErr) return null
+
+  const authUser = { id: userData.user.id, tenants: (memberships || []).map((m) => m.tenant_id) }
+  authCache.set(token, { authUser, expiresAt: Date.now() + AUTH_CACHE_TTL_MS })
+  return authUser
+}
+
+// Limpa entradas expiradas do cache periodicamente (tokens rotacionam a cada refresh)
+setInterval(() => {
+  const now = Date.now()
+  for (const [token, v] of authCache) if (v.expiresAt <= now) authCache.delete(token)
+}, 5 * 60_000).unref()
+
 /* ── Socket.io: salas por empresa (escopo dos eventos) ──
-   Cada navegador entra nas salas das empresas a que tem acesso.
+   Cada navegador entra nas salas das empresas a que o usuário LOGADO
+   realmente pertence — o servidor valida o token, não confia no cliente.
    Assim QR/mensagens de uma empresa NÃO vazam para outras. */
 io.on('connection', (socket) => {
-  socket.on('join', (payload) => {
-    // valida o secret em produção antes de entrar nas salas
-    if (IS_PROD && SECRET && payload?.secret !== SECRET) return
-    const ids = String(payload?.tenants || '')
-      .split(',').map((s) => s.trim()).filter(Boolean)
-    for (const id of ids) socket.join(`tenant:${id}`)
+  socket.on('join', async (payload) => {
+    const authUser = await resolveAuthUser(payload?.token)
+    if (!authUser) return
+    for (const id of authUser.tenants) socket.join(`tenant:${id}`)
   })
 })
 
-/* ── Autenticação ──────────────────────────────────────────── */
+// Toda rota /api exige um token Supabase válido, vinculado a pelo menos uma empresa
+async function requireAuth(req, res, next) {
+  const authHeader = req.headers['authorization'] || ''
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null
+  if (!token) return res.status(401).json({ error: 'Não autenticado' })
 
-// Em produção, todo request precisa do cabeçalho x-crc-secret
-function requireAuth(req, res, next) {
-  if (!IS_PROD || !SECRET) return next()
-  if (req.headers['x-crc-secret'] !== SECRET) {
-    return res.status(401).json({ error: 'Não autorizado' })
+  try {
+    const authUser = await resolveAuthUser(token)
+    if (!authUser) return res.status(401).json({ error: 'Sessão inválida ou expirada' })
+    if (authUser.tenants.length === 0) {
+      return res.status(403).json({ error: 'Sua conta não está vinculada a nenhuma empresa' })
+    }
+    req.authUser = authUser
+    next()
+  } catch (e) {
+    console.error('[auth] erro ao validar sessão:', e.message)
+    res.status(500).json({ error: 'Erro ao validar sessão' })
   }
-  next()
 }
 
 app.use('/api', requireAuth)
@@ -127,9 +179,7 @@ app.use('/api', requireAuth)
 /* ── Helpers de tenant ─────────────────────────────────────── */
 
 function getTenants(req) {
-  const raw = req.headers['x-tenant-id'] || req.query.tenant_id || 'none'
-  if (raw === 'none') return []
-  return raw.split(',').map(s => s.trim()).filter(Boolean)
+  return req.authUser?.tenants ?? []
 }
 
 function buildTenantFilter(tenants, params, col = 'tenant_id') {
@@ -140,7 +190,7 @@ function buildTenantFilter(tenants, params, col = 'tenant_id') {
 }
 
 function getUserId(req) {
-  return (req.headers['x-user-id'] || req.query.user_id || '').trim()
+  return req.authUser?.id ?? ''
 }
 
 // Verifica se o usuário é dono da sessão
@@ -504,11 +554,12 @@ app.post('/api/conversations/:jid/media', upload.single('file'), async (req, res
 app.get('/health', (_req, res) => res.json({ ok: true }))
 
 app.get('*', (_req, res) => {
-  // Injeta o secret na meta tag para autenticação do frontend
+  // Injeta a config pública do Supabase (URL + anon key — protegidas por RLS,
+  // não são segredo) para o frontend poder logar e consultar seus próprios dados
   const html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8')
   const injected = html.replace(
     '<meta charset="UTF-8" />',
-    `<meta charset="UTF-8" />\n  <meta name="crc-secret" content="${SECRET}" />`
+    `<meta charset="UTF-8" />\n  <meta name="supabase-url" content="${SUPABASE_URL}" />\n  <meta name="supabase-anon-key" content="${SUPABASE_ANON_KEY}" />`
   )
   res.setHeader('Content-Type', 'text/html')
   res.send(injected)

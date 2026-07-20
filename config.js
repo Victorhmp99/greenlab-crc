@@ -1,9 +1,14 @@
-import 'dotenv/config'
+import dotenv from 'dotenv'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+// Carrega o .env relativo a ESTA pasta (crc-service), não ao cwd de quem
+// iniciou o processo — 'dotenv/config' padrão depende do cwd e falha
+// silenciosamente se o servidor for iniciado de outro diretório.
+dotenv.config({ path: path.join(__dirname, '.env') })
 
 // DATA_DIR: onde ficam banco, sessões e mídia
 // Prioridade:
@@ -34,6 +39,10 @@ for (const dir of ['sessions', 'media']) {
 export const SESSIONS_DIR = path.join(DATA_DIR, 'sessions')
 export const MEDIA_DIR    = path.join(DATA_DIR, 'media')
 export const PORT         = parseInt(process.env.PORT || '3001', 10)
-export const SECRET       = process.env.CRC_SECRET || ''
 export const ORIGIN       = process.env.ALLOWED_ORIGIN || '*'
 export const IS_PROD      = process.env.NODE_ENV === 'production'
+
+// Mesmo projeto Supabase do CRM — login do CRC usa a mesma conta/senha,
+// e o acesso a cada empresa vem de user_memberships (RLS), não de header.
+export const SUPABASE_URL      = process.env.SUPABASE_URL || ''
+export const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || ''

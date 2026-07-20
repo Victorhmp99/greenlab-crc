@@ -2,25 +2,26 @@
    CRC Green Lab — Frontend
    ═══════════════════════════════════════════════════════════ */
 
-// Lê todos os tenants e o usuário atual da URL (passados pelo CRM)
-const _params      = new URLSearchParams(window.location.search)
-const TENANT_ID    = _params.get('tenant_id') || 'default'
-const CURRENT_USER = _params.get('user_id') || ''
-const _rawNames    = (_params.get('tenant_names') || '').split(',').map(s => decodeURIComponent(s)).filter(Boolean)
-const _ids         = TENANT_ID === 'all' ? [] : TENANT_ID.split(',').filter(Boolean)
+/* ── Autenticação (Supabase — mesma conta do CRM) ────────────
+   Cada pessoa loga com o email/senha do CRM. O acesso a cada empresa vem
+   de user_memberships (a mesma fonte de verdade que o CRM usa) — não
+   depende mais de nada que venha pela URL. */
+const SUPABASE_URL      = document.querySelector('meta[name="supabase-url"]')?.content || ''
+const SUPABASE_ANON_KEY = document.querySelector('meta[name="supabase-anon-key"]')?.content || ''
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, storageKey: 'crc-auth' },
+})
 
-// Mapa: tenant_id → nome da empresa
-const TENANT_NAMES = {}
-_ids.forEach((id, i) => { TENANT_NAMES[id] = _rawNames[i] || id.slice(0, 8) })
+let CURRENT_USER      = ''
+let AVAILABLE_TENANTS = []   // [{id, name}] — só as empresas que esse usuário realmente pertence
+const TENANT_NAMES    = {}   // tenant_id -> nome, preenchido após login
 
-// Segredo compartilhado com o servidor (injetado via meta tag em produção)
-const CRC_SECRET = document.querySelector('meta[name="crc-secret"]')?.content || ''
-
-// Cabeçalho enviado em todas as requisições
-const TENANT_HEADERS = {
-  'x-tenant-id':  TENANT_ID,
-  'x-user-id':    CURRENT_USER,
-  'x-crc-secret': CRC_SECRET,
+// Cabeçalho enviado em todas as requisições — mutado (não recriado) após
+// login, pra todo `{ ...TENANT_HEADERS }' espalhado pelo arquivo pegar o token atual
+const TENANT_HEADERS = {}
+function setAuthToken(token) {
+  if (token) TENANT_HEADERS['Authorization'] = `Bearer ${token}`
+  else       delete TENANT_HEADERS['Authorization']
 }
 
 // Usuário é dono de uma sessão se foi ele quem criou
@@ -29,11 +30,6 @@ function isOwner(session) {
   if (!CURRENT_USER) return false
   return session.created_by === CURRENT_USER
 }
-
-// Lista de tenants disponíveis para o seletor (ao criar nova sessão)
-const AVAILABLE_TENANTS = _ids.length > 0
-  ? _ids.map(id => ({ id, name: TENANT_NAMES[id] || id }))
-  : [{ id: 'default', name: 'Padrão' }]
 
 const state = {
   sessions:           [],
@@ -61,9 +57,12 @@ setMobileView(state.mobileView)
 
 const socket = io()
 
-// Entra nas salas das empresas deste usuário — recebe SÓ os eventos delas
+// Entra nas salas das empresas deste usuário — o servidor valida o token
+// e decide sozinho quais empresas essa pessoa realmente pode ver
 function joinTenantRooms() {
-  socket.emit('join', { tenants: TENANT_ID, secret: CRC_SECRET })
+  const auth = TENANT_HEADERS['Authorization']
+  if (!auth) return   // ainda não logou
+  socket.emit('join', { token: auth.replace('Bearer ', '') })
 }
 socket.on('connect', joinTenantRooms)
 if (socket.connected) joinTenantRooms()
@@ -163,16 +162,122 @@ socket.on('message:new', ({ conversation, message }) => {
   }
 })
 
+/* ── Login ────────────────────────────────────────────────── */
+
+function showLoginScreen(message) {
+  document.getElementById('app').classList.add('hidden')
+  document.getElementById('login-screen').classList.remove('hidden')
+  const errBox = document.getElementById('login-error')
+  if (message) { errBox.textContent = message; errBox.classList.remove('hidden') }
+  else         { errBox.classList.add('hidden') }
+}
+
+async function doLogin() {
+  const email    = document.getElementById('login-email').value.trim()
+  const password = document.getElementById('login-password').value
+  const errBox   = document.getElementById('login-error')
+  const btn      = document.getElementById('login-submit')
+  errBox.classList.add('hidden')
+
+  if (!email || !password) {
+    errBox.textContent = 'Preencha e-mail e senha.'
+    errBox.classList.remove('hidden')
+    return
+  }
+
+  btn.disabled = true
+  try {
+    const { error } = await supabaseClient.auth.signInWithPassword({ email, password })
+    if (error) {
+      errBox.textContent = 'E-mail ou senha inválidos.'
+      errBox.classList.remove('hidden')
+      return
+    }
+    await bootFromSession()
+  } catch (e) {
+    errBox.textContent = 'Erro de conexão: ' + e.message
+    errBox.classList.remove('hidden')
+  } finally {
+    btn.disabled = false
+  }
+}
+
+// Carrega a sessão salva (se houver) e monta o app — chamado no boot da
+// página e logo após um login bem-sucedido
+async function bootFromSession() {
+  const { data: { session } } = await supabaseClient.auth.getSession()
+  if (!session) { showLoginScreen(); return }
+
+  setAuthToken(session.access_token)
+  CURRENT_USER = session.user.id
+
+  // Empresas que esse usuário realmente pertence (mesma fonte de verdade do CRM)
+  const { data: memberships, error: mErr } = await supabaseClient
+    .from('user_memberships')
+    .select('tenant_id')
+    .eq('user_id', CURRENT_USER)
+    .eq('active', true)
+
+  if (mErr || !memberships || memberships.length === 0) {
+    await supabaseClient.auth.signOut()
+    showLoginScreen('Sua conta não está vinculada a nenhuma empresa com WhatsApp.')
+    return
+  }
+
+  const tenantIds = memberships.map((m) => m.tenant_id)
+  const { data: tenants } = await supabaseClient
+    .from('tenants')
+    .select('id, name')
+    .in('id', tenantIds)
+
+  AVAILABLE_TENANTS = (tenants || []).map((t) => ({ id: t.id, name: t.name }))
+  AVAILABLE_TENANTS.forEach((t) => { TENANT_NAMES[t.id] = t.name })
+
+  document.getElementById('login-screen').classList.add('hidden')
+  document.getElementById('app').classList.remove('hidden')
+
+  joinTenantRooms()
+  await init()
+}
+
+async function doLogout() {
+  await supabaseClient.auth.signOut()
+}
+
+// Reage a logout ou renovação de token em qualquer momento da sessão
+supabaseClient.auth.onAuthStateChange((event, session) => {
+  if (event === 'SIGNED_OUT') {
+    setAuthToken(null)
+    showLoginScreen()
+  } else if (event === 'TOKEN_REFRESHED' && session) {
+    setAuthToken(session.access_token)
+  }
+})
+
+// Volta pra tela de login se uma resposta da API vier 401/403 (sessão
+// expirou ou perdeu o vínculo com a empresa no meio do uso)
+function handleAuthFailure(res) {
+  if (res.status === 401 || res.status === 403) {
+    showLoginScreen('Sua sessão expirou. Entre novamente.')
+    return true
+  }
+  return false
+}
+
 /* ── Init ─────────────────────────────────────────────────── */
 
 async function init() {
   await Promise.all([loadSessions(), loadConversations()])
 }
 
+// Ao carregar a página: se já tem sessão salva, entra direto sem pedir login de novo
+bootFromSession()
+
 /* ── Sessions ─────────────────────────────────────────────── */
 
 async function loadSessions() {
   const res = await fetch('/api/sessions', { headers: TENANT_HEADERS })
+  if (!res.ok) { if (handleAuthFailure(res)) return; state.sessions = []; return }
   state.sessions = await res.json()
 
   // Auto-claim: se há sessões sem dono e o usuário está logado, assume o controle
@@ -830,6 +935,7 @@ async function loadConversations() {
   if (state.activeSession) params.set('session_id', state.activeSession.id)
   if (searchQuery)         params.set('search', searchQuery)
   const res = await fetch(`/api/conversations?${params}`, { headers: TENANT_HEADERS })
+  if (!res.ok) { if (handleAuthFailure(res)) return; state.conversations = []; renderConversations(); return }
   state.conversations = await res.json()
   renderConversations()
 }
@@ -1084,4 +1190,4 @@ async function sendToNewContact() {
 }
 
 /* ── Start ────────────────────────────────────────────────── */
-init()
+// init() agora é chamado por bootFromSession(), só depois do login confirmado

@@ -344,6 +344,28 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 .text-muted { color: var(--text-2); font-size: 13px; }
 .hidden { display: none !important; }
 
+/* ── Login ── */
+.login-screen {
+  position: fixed; inset: 0; z-index: 900;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg); padding: 24px;
+}
+.login-screen.hidden { display: none; }
+.login-box {
+  width: 100%; max-width: 340px;
+  display: flex; flex-direction: column; align-items: center;
+  text-align: center;
+}
+.login-logo { width: 64px; height: 64px; margin-bottom: 10px; }
+.login-box h1 { font-size: 18px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+.login-box .field-input { margin-top: 14px; }
+.login-box #login-submit { width: 100%; margin-top: 18px; padding: 11px; font-size: 14px; }
+.login-error {
+  width: 100%; margin-top: 10px; padding: 8px 12px; border-radius: 8px;
+  background: rgba(248,113,113,.1); color: #f87171; font-size: 12px; text-align: left;
+}
+.login-error.hidden { display: none; }
+
 @keyframes pulse     { 0%,100% { opacity:1; } 50% { opacity:.4; } }
 @keyframes fadeInUp  { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
 .spinner { width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--green); border-radius: 50%; animation: spin .7s linear infinite; }

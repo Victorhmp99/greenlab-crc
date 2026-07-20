@@ -132,16 +132,36 @@
   </div>
 </div>
 
+<!-- ══ Login ══ -->
+<div id="login-screen" class="login-screen">
+  <div class="login-box">
+    <img src="/icons/icon-192.png" alt="" class="login-logo" />
+    <h1>SDR WhatsApp</h1>
+    <p class="text-muted">Entre com sua conta do Green Hub CRM</p>
+    <input id="login-email" class="field-input" type="email" placeholder="E-mail" autocomplete="username"
+      onkeydown="if(event.key==='Enter') document.getElementById('login-password').focus()" />
+    <input id="login-password" class="field-input" type="password" placeholder="Senha" autocomplete="current-password"
+      onkeydown="if(event.key==='Enter') doLogin()" />
+    <div id="login-error" class="login-error hidden"></div>
+    <button id="login-submit" class="btn-primary" onclick="doLogin()">Entrar</button>
+  </div>
+</div>
+
 <!-- ══ App ══ -->
-<div id="app">
+<div id="app" class="hidden">
 
   <!-- Sessões (números) -->
   <aside id="sessions-panel">
     <div class="panel-header">
       <span class="panel-title">Números</span>
-      <button class="btn-icon" title="Adicionar número" onclick="openAddModal()">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-      </button>
+      <div style="display:flex;gap:4px">
+        <button class="btn-icon" title="Adicionar número" onclick="openAddModal()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <button class="btn-icon" title="Sair" onclick="doLogout()">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
+      </div>
     </div>
     <div id="filter-all" class="session-item active" onclick="selectSession(null)">
       <div class="session-avatar all-avatar">
@@ -233,6 +253,7 @@
 
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="/socket.io/socket.io.js"></script>
 <script src="/app.js"></script>
 <script>
