@@ -294,6 +294,19 @@ async function loadSessions() {
   renderSessions()
 }
 
+// Soma o unread_count de todas as conversas de um número (ou geral, se sessionId for null)
+function unreadCountFor(sessionId) {
+  return state.conversations.reduce((sum, c) => {
+    if (sessionId !== null && c.session_id !== sessionId) return sum
+    return sum + (c.unread_count || 0)
+  }, 0)
+}
+
+function badgeHtml(count) {
+  if (!count) return ''
+  return `<span class="unread-badge">${count > 99 ? '99+' : count}</span>`
+}
+
 function renderSessions() {
   const list = document.getElementById('sessions-list')
 
@@ -301,6 +314,14 @@ function renderSessions() {
   const userOwnsAny = state.sessions.some(s => isOwner(s))
   const addBtn      = document.querySelector('#sessions-panel .panel-header .btn-icon')
   if (addBtn) addBtn.style.display = (userOwnsAny || !state.sessions.length) ? 'flex' : 'none'
+
+  // Badge da "Todas" (caixa unificada)
+  const allBadge = document.getElementById('filter-all-badge')
+  const allCount = unreadCountFor(null)
+  if (allBadge) {
+    allBadge.textContent = allCount > 99 ? '99+' : allCount
+    allBadge.classList.toggle('hidden', allCount === 0)
+  }
 
   list.innerHTML = state.sessions.map(s => `
     <div class="session-item ${state.activeSession?.id === s.id ? 'active' : ''}"
@@ -316,6 +337,7 @@ function renderSessions() {
           : ''}
       </div>
       <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+        ${badgeHtml(unreadCountFor(s.id))}
         <span class="status-dot ${s.status}"></span>
         ${isOwner(s) ? `
         <div class="session-actions">
@@ -485,6 +507,7 @@ function renderConversations() {
 
   if (!state.conversations.length) {
     list.innerHTML = `<div class="empty-state" style="padding:40px 0"><span>Nenhuma conversa</span></div>`
+    renderSessions()   // zera os contadores de não lidas
     return
   }
 
@@ -516,6 +539,8 @@ function renderConversations() {
       </button>
     </div>`
   }).join('')
+
+  renderSessions()   // mantém os contadores de não lidas por número em sincronia
 }
 
 // Apaga uma conversa (só do CRC — não afeta o WhatsApp)

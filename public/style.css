@@ -440,8 +440,21 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 @media (max-width: 768px) {
   #app {
     grid-template-columns: 1fr;
-    /* var(--tg-viewport-...) fallback: respeita a área segura do PWA instalado (notch/status bar) */
     height: 100dvh;
+    /* Empurra o conteúdo pra baixo do notch/barra de status (viewport-fit=cover
+       + status bar translúcida do PWA fazem o conteúdo nascer POR BAIXO dela —
+       sem isso os botões do topo ficam cobertos e "inclicáveis" na prática) */
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* Cabeçalhos ganham um respiro extra — em alguns aparelhos o inset sozinho
+     encosta demais no relógio/câmera; esse espaço garante alvo de toque confortável */
+  #sessions-panel .panel-header,
+  #conversations-panel .panel-header,
+  #chat-header {
+    padding-top: 14px;
+    min-height: 48px;
   }
 
   /* Por padrão nenhum painel aparece — o atributo data-mobile-view em #app decide qual mostrar */
