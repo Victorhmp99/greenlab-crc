@@ -156,11 +156,51 @@ socket.on('message:new', ({ conversation, message }) => {
   renderConversations()
 
   const active = state.activeConversation
-  if (active && active.id === message.conversation_id && active.session_id === message.session_id) {
+  const isThisConvOpen = active && active.id === message.conversation_id && active.session_id === message.session_id
+
+  if (isThisConvOpen) {
     appendMessage(message)
     scrollToBottom()
   }
+
+  // Notificação estilo WhatsApp — só avisos passivos (lê o que já chegou),
+  // nunca interage com o WhatsApp, então não tem risco nenhum de ban.
+  if (!message.from_me && !isThisConvOpen) {
+    notifyIncomingMessage(conversation, message)
+  }
 })
+
+/* ── Notificação de mensagem nova (Web Notification API) ─────
+   Funciona enquanto o CRC está aberto (aba em primeiro ou segundo plano),
+   igual notificação de site. Não funciona com o app totalmente fechado
+   — isso exigiria push de verdade (infra bem maior), não implementado aqui. */
+
+function requestNotificationPermission() {
+  if (!('Notification' in window)) return
+  if (Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {})
+  }
+}
+
+function notifyIncomingMessage(conversation, message) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return
+
+  const title = conversation.name || conversation.phone || 'Nova mensagem'
+  const body  = previewIcon(message.body) + (message.body || 'Nova mensagem')
+
+  const n = new Notification(title, {
+    body,
+    icon: '/icons/icon-192.png',
+    tag: `conv-${conversation.session_id}-${conversation.id}`,  // agrupa por conversa, não empilha
+    renotify: true,
+  })
+  n.onclick = () => {
+    window.focus()
+    n.close()
+    selectSession(conversation.session_id)
+    openConversation(conversation.id, conversation.session_id)
+  }
+}
 
 /* ── Login ────────────────────────────────────────────────── */
 
@@ -257,6 +297,7 @@ async function bootFromSession() {
   joinTenantRooms()
   await init()
   maybeShowInstallGuideAutomatically()
+  requestNotificationPermission()
 }
 
 async function doLogout() {
