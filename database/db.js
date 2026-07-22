@@ -51,6 +51,22 @@ export function initDB() {
       ON conversations(session_id, last_message_at DESC);
     CREATE INDEX IF NOT EXISTS idx_msg_timestamp
       ON messages(timestamp);
+
+    -- Web Push: uma linha por (aparelho, empresa). O endpoint identifica o
+    -- aparelho/navegador; guardamos tenant_id pra saber quais notificações
+    -- mandar pra ele. Gravado só por usuário autenticado, e só com tenants
+    -- aos quais ele pertence (validado na rota /api/push/subscribe).
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      endpoint    TEXT NOT NULL,
+      tenant_id   TEXT NOT NULL,
+      user_id     TEXT NOT NULL,
+      p256dh      TEXT NOT NULL,
+      auth        TEXT NOT NULL,
+      created_at  TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (endpoint, tenant_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_push_tenant
+      ON push_subscriptions(tenant_id);
   `)
 
   for (const col of [

@@ -170,20 +170,85 @@ socket.on('message:new', ({ conversation, message }) => {
   }
 })
 
-/* ── Notificação de mensagem nova (Web Notification API) ─────
-   Funciona enquanto o CRC está aberto (aba em primeiro ou segundo plano),
-   igual notificação de site. Não funciona com o app totalmente fechado
-   — isso exigiria push de verdade (infra bem maior), não implementado aqui. */
+/* ── Notificação de mensagem nova ────────────────────────────
+   Dois níveis, complementares:
+   1) Aviso AO VIVO (Web Notification): aparece na hora enquanto a aba está
+      aberta. Instantâneo, mas o SO suspende quando o app fica fechado.
+   2) Web PUSH (via service worker): o próprio sistema operacional acorda e
+      mostra a notificação mesmo com o app FECHADO — é isso que resolve o
+      "parou de notificar depois de 1 min". Configurado em subscribeToPush().
+   Tudo é leitura passiva do que já chegou: nunca toca no WhatsApp, sem risco
+   de ban. */
+
+const VAPID_PUBLIC_KEY = document.querySelector('meta[name="vapid-public-key"]')?.content || ''
 
 function requestNotificationPermission() {
   if (!('Notification' in window)) return
-  if (Notification.permission === 'default') {
-    Notification.requestPermission().catch(() => {})
+  if (Notification.permission === 'granted') {
+    subscribeToPush()
+  } else if (Notification.permission === 'default') {
+    Notification.requestPermission()
+      .then((perm) => { if (perm === 'granted') subscribeToPush() })
+      .catch(() => {})
   }
 }
 
+// Converte a chave pública VAPID (base64url) para o formato que o pushManager exige
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
+  const base64  = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const raw     = atob(base64)
+  const out     = new Uint8Array(raw.length)
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i)
+  return out
+}
+
+// Registra este aparelho no servidor pra receber push das empresas do usuário.
+// Idempotente: pode chamar sempre que logar/abrir — reaproveita a subscription.
+async function subscribeToPush() {
+  try {
+    if (!VAPID_PUBLIC_KEY || !('serviceWorker' in navigator) || !('PushManager' in window)) return
+    const reg = await navigator.serviceWorker.ready
+    let sub = await reg.pushManager.getSubscription()
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      })
+    }
+    await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
+      body: JSON.stringify({ subscription: sub }),
+    })
+  } catch (e) {
+    console.warn('[push] não foi possível assinar:', e.message)
+  }
+}
+
+// Remove o registro de push deste aparelho (ao deslogar) — para de receber
+// notificações da conta antiga neste dispositivo.
+async function unsubscribeFromPush() {
+  try {
+    if (!('serviceWorker' in navigator)) return
+    const reg = await navigator.serviceWorker.ready
+    const sub = await reg.pushManager.getSubscription()
+    if (!sub) return
+    await fetch('/api/push/unsubscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
+      body: JSON.stringify({ endpoint: sub.endpoint }),
+    }).catch(() => {})
+    await sub.unsubscribe().catch(() => {})
+  } catch (_) {}
+}
+
+// Aviso ao vivo (aba aberta) — complementa o push. Se a aba está visível e
+// o push também dispararia, evitamos duplicar: só mostra ao vivo quando a
+// página está de fato em foco (o SO não teria acordado o SW aqui de qualquer forma).
 function notifyIncomingMessage(conversation, message) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return
+  if (document.visibilityState !== 'visible') return   // fechado/2º plano → o push cuida
 
   const title = conversation.name || conversation.phone || 'Nova mensagem'
   const body  = previewIcon(message.body) + (message.body || 'Nova mensagem')
@@ -200,6 +265,18 @@ function notifyIncomingMessage(conversation, message) {
     selectSession(conversation.session_id)
     openConversation(conversation.id, conversation.session_id)
   }
+}
+
+// Clique na notificação de push (com app fechado) chega aqui via service worker:
+// abre a conversa certa quando a aba ganha foco.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    const d = event.data || {}
+    if (d.type === 'open-conversation' && d.sessionId && d.convId) {
+      selectSession(d.sessionId)
+      openConversation(d.convId, d.sessionId)
+    }
+  })
 }
 
 /* ── Login ────────────────────────────────────────────────── */
@@ -301,6 +378,7 @@ async function bootFromSession() {
 }
 
 async function doLogout() {
+  await unsubscribeFromPush()   // para de receber push neste aparelho (antes de perder o token)
   await supabaseClient.auth.signOut()
 }
 

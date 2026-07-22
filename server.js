@@ -40,7 +40,8 @@ import path from 'path'
 import fs from 'fs'
 import { initDB } from './database/db.js'
 import { SessionManager } from './whatsapp/sessionManager.js'
-import { PORT, ORIGIN, IS_PROD, MEDIA_DIR, SESSIONS_DIR, SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js'
+import { createPushService } from './push/pushService.js'
+import { PORT, ORIGIN, IS_PROD, MEDIA_DIR, SESSIONS_DIR, SUPABASE_URL, SUPABASE_ANON_KEY, VAPID_PUBLIC_KEY } from './config.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -82,7 +83,8 @@ const upload = multer({
 })
 
 const db = initDB()
-const sm = new SessionManager(db, io)
+const pushService = createPushService(db)
+const sm = new SessionManager(db, io, pushService)
 
 // Backup das credenciais no boot, ANTES de reconectar — rede de segurança:
 // se uma atualização corromper/derrubar sessões, dá pra restaurar sem re-parear
@@ -551,6 +553,33 @@ app.post('/api/conversations/:jid/media', upload.single('file'), async (req, res
   }
 })
 
+/* ── Web Push (notificação com app fechado) ─────────────────
+   Registra o aparelho pra receber push das empresas do usuário. Só grava
+   os tenants que ELE realmente pertence (req.authUser.tenants) — nunca
+   confia numa lista vinda do cliente. Leitura passiva: não toca no WhatsApp. */
+
+app.post('/api/push/subscribe', (req, res) => {
+  const { subscription } = req.body || {}
+  const tenants = getTenants(req)
+  const userId  = getUserId(req)
+  if (!subscription?.endpoint) return res.status(400).json({ error: 'subscription obrigatória' })
+  if (!tenants.length)         return res.status(403).json({ error: 'sem empresas' })
+  try {
+    pushService.subscribe(subscription, userId, tenants)
+    res.json({ ok: true })
+  } catch (e) {
+    console.error('[push] subscribe falhou:', e.message)
+    res.status(400).json({ error: e.message })
+  }
+})
+
+app.post('/api/push/unsubscribe', (req, res) => {
+  const { endpoint } = req.body || {}
+  if (!endpoint) return res.status(400).json({ error: 'endpoint obrigatório' })
+  pushService.unsubscribe(endpoint)
+  res.json({ ok: true })
+})
+
 app.get('/health', (_req, res) => res.json({ ok: true }))
 
 app.get('*', (_req, res) => {
@@ -559,7 +588,7 @@ app.get('*', (_req, res) => {
   const html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8')
   const injected = html.replace(
     '<meta charset="UTF-8" />',
-    `<meta charset="UTF-8" />\n  <meta name="supabase-url" content="${SUPABASE_URL}" />\n  <meta name="supabase-anon-key" content="${SUPABASE_ANON_KEY}" />`
+    `<meta charset="UTF-8" />\n  <meta name="supabase-url" content="${SUPABASE_URL}" />\n  <meta name="supabase-anon-key" content="${SUPABASE_ANON_KEY}" />\n  <meta name="vapid-public-key" content="${VAPID_PUBLIC_KEY}" />`
   )
   res.setHeader('Content-Type', 'text/html')
   res.send(injected)

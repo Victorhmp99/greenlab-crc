@@ -265,9 +265,10 @@ function detectMediaType(msg) {
 /* ── SessionManager ──────────────────────────────────── */
 
 export class SessionManager {
-  constructor(db, io) {
+  constructor(db, io, pushService = null) {
     this.db        = db
     this.io        = io
+    this.push      = pushService   // Web Push (notificação com app fechado); null = desligado
     this.sockets   = new Map()
     this.timers    = new Map()
     this.qrCounts  = new Map()   // sessionId → nº de QRs gerados
@@ -305,6 +306,40 @@ export class SessionManager {
     }
     if (tenant) this.io.to(`tenant:${tenant}`).emit(event, payload)
     else        this.io.emit(event, payload)
+
+    // Web Push: só mensagem RECEBIDA (nunca as que a própria SDR enviou) e só
+    // se houver empresa dona. Fire-and-forget — nunca bloqueia nem derruba o
+    // fluxo de mensagens. Continua sendo leitura passiva: não toca no WhatsApp.
+    if (this.push && tenant && event === 'message:new' && payload?.message && !payload.message.from_me) {
+      this._pushIncoming(tenant, payload)
+    }
+  }
+
+  /* Monta e dispara o push de uma mensagem recebida. Isolado num try/catch
+     próprio pra qualquer erro aqui jamais afetar o socket/mensagens. */
+  _pushIncoming(tenant, payload) {
+    try {
+      const conv = payload.conversation || {}
+      const msg  = payload.message || {}
+      const title = conv.name || conv.phone || 'Nova mensagem'
+      let preview = (msg.body || '').trim()
+      if (!preview) {
+        const t = msg.media_type
+        preview = t === 'image' ? '📷 Imagem'
+                : t === 'video' ? '🎥 Vídeo'
+                : t === 'audio' ? '🎵 Áudio'
+                : t === 'document' ? '📎 Documento'
+                : 'Nova mensagem'
+      } else if (preview.length > 140) {
+        preview = preview.slice(0, 137) + '…'
+      }
+      this.push.sendToTenant(tenant, {
+        title,
+        body: preview,
+        tag:  `conv-${conv.session_id}-${conv.id}`,
+        data: { sessionId: conv.session_id, convId: conv.id },
+      }).catch(() => {})
+    } catch (_) { /* push nunca pode quebrar o fluxo principal */ }
   }
 
   /* ── Diagnóstico: pergunta ao WhatsApp o JID canônico de um número ──

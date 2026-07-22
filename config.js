@@ -46,3 +46,12 @@ export const IS_PROD      = process.env.NODE_ENV === 'production'
 // e o acesso a cada empresa vem de user_memberships (RLS), não de header.
 export const SUPABASE_URL      = process.env.SUPABASE_URL || ''
 export const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || ''
+
+// ── Web Push (notificação com o app fechado) ──
+// A chave PÚBLICA vai pro navegador (é pública por design). A PRIVADA fica só
+// aqui no servidor (env var no Railway) e nunca é exposta. VAPID_SUBJECT é um
+// contato exigido pelo protocolo (mailto: ou URL). Sem essas 2 chaves, o push
+// fica desligado e o app cai no aviso ao vivo de sempre — nada quebra.
+export const VAPID_PUBLIC_KEY  = process.env.VAPID_PUBLIC_KEY  || ''
+export const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || ''
+export const VAPID_SUBJECT     = process.env.VAPID_SUBJECT || 'mailto:contato@assessoriagreenlab.com.br'
