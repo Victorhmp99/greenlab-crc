@@ -773,12 +773,15 @@ async function openConversation(convId, sessionId) {
   const sColor = sessionColor(conv.session_id)
   document.getElementById('chat-name').textContent            = conv.name || conv.phone
   document.getElementById('chat-avatar-initials').textContent = initials(conv.name || conv.phone)
+  const phoneLabel = conv.phone ? fmtPhone(conv.phone) : 'Número não identificado'
   document.getElementById('chat-meta').innerHTML =
-    `${conv.phone} · <span style="color:${sColor};font-weight:600">${esc(conv.session_name)}</span>`
+    `${esc(phoneLabel)} · <span style="color:${sColor};font-weight:600">${esc(conv.session_name)}</span>`
   document.getElementById('chat-header').style.borderBottom = `2px solid ${sColor}`
 
-  const phone = conv.phone.replace(/\D/g, '')
-  document.getElementById('chat-wa-link').href = `https://web.whatsapp.com/send?phone=${phone}`
+  const phone = (conv.phone || '').replace(/\D/g, '')
+  document.getElementById('chat-wa-link').href = phone
+    ? `https://web.whatsapp.com/send?phone=${phone}`
+    : '#'
 
   // Foto de perfil no header
   loadProfilePic(conv)
@@ -1188,6 +1191,18 @@ function initials(name) {
   if (!name) return '?'
   const parts = String(name).trim().split(/\s+/)
   return parts.length >= 2 ? (parts[0][0] + parts[1][0]).toUpperCase() : parts[0].slice(0, 2).toUpperCase()
+}
+
+// Formata número BR pra leitura: 5561981793632 → +55 (61) 98179-3632
+function fmtPhone(raw) {
+  const d = String(raw || '').replace(/\D/g, '')
+  if (!d) return ''
+  if (d.startsWith('55') && (d.length === 12 || d.length === 13)) {
+    const ddd = d.slice(2, 4), rest = d.slice(4)
+    const meio = rest.length === 9 ? `${rest.slice(0, 5)}-${rest.slice(5)}` : `${rest.slice(0, 4)}-${rest.slice(4)}`
+    return `+55 (${ddd}) ${meio}`
+  }
+  return '+' + d   // outros países: mostra com + na frente
 }
 
 const COLORS = ['#16a34a','#0891b2','#7c3aed','#db2777','#ea580c','#ca8a04','#059669']

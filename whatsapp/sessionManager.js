@@ -480,6 +480,9 @@ export class SessionManager {
           this.db.prepare('UPDATE sessions SET status=?,phone=? WHERE id=?').run('connected', phone, sessionId)
           this._emit(sessionId, 'session:update', { sessionId, status: 'connected', phone })
           console.log(`✅ [${name}] Conectado: ${phone}`)
+          // Cura conversas antigas que guardaram o LID no lugar do telefone real
+          // (só leitura do mapa LOCAL do Baileys — sem rede, zero risco de ban).
+          setTimeout(() => this._backfillLidPhones(sessionId, sock).catch(() => {}), 4000).unref?.()
         }
 
         if (connection === 'close') {
@@ -602,22 +605,31 @@ export class SessionManager {
     const fromMe = !!msg.key.fromMe
     const ts     = new Date((msg.messageTimestamp || Math.floor(Date.now() / 1000)) * 1000).toISOString()
     const msgId  = msg.key.id
-    const name   = msg.pushName || jid.split('@')[0]
-    const phone  = jid.split('@')[0]
+    // Telefone REAL do contato. O WhatsApp novo endereça muita conversa por
+    // "LID" (@lid) — um id de privacidade que NÃO é o número. Resolvemos o
+    // telefone de verdade (senão a empresa não consegue ligar/contatar).
+    const phone  = await this._resolvePhone(jid, msg, sock)   // string ou null
+    const name   = msg.pushName || phone || 'Contato'
     const media  = detectMediaType(msg)
 
     // 1. Salva/atualiza conversa imediatamente
     const exists = this.db.prepare('SELECT id FROM conversations WHERE id=? AND session_id=?').get(jid, sessionId)
     if (exists) {
+      // COALESCE(?,phone): só sobrescreve o telefone se agora conseguimos
+      // resolver um real (cura linhas antigas que guardaram o LID); nunca
+      // apaga um bom com null. name idem: só preenche se ainda era número/LID.
       this.db.prepare(`
-        UPDATE conversations SET last_message=?,last_message_at=?,unread_count=unread_count+?
+        UPDATE conversations
+        SET last_message=?, last_message_at=?, unread_count=unread_count+?,
+            phone = COALESCE(?, phone),
+            name  = CASE WHEN (name IS NULL OR name='' OR name=phone) THEN COALESCE(?, name) ELSE name END
         WHERE id=? AND session_id=?
-      `).run(body, ts, fromMe ? 0 : 1, jid, sessionId)
+      `).run(body, ts, fromMe ? 0 : 1, phone, msg.pushName || phone || null, jid, sessionId)
     } else {
       this.db.prepare(`
         INSERT OR IGNORE INTO conversations(id,session_id,name,phone,last_message,last_message_at,unread_count)
         VALUES(?,?,?,?,?,?,?)
-      `).run(jid, sessionId, name, phone, body, ts, fromMe ? 0 : 1)
+      `).run(jid, sessionId, name, phone ?? '', body, ts, fromMe ? 0 : 1)
     }
 
     // 2. Salva mensagem imediatamente (sem media_url ainda)
@@ -951,6 +963,64 @@ export class SessionManager {
   /* Garante que a conversa existe antes de enviar — sem isso, mandar mensagem
      pra um número que nunca escreveu (ex: primeiro contato automático via
      webhook) grava a mensagem mas a conversa não aparece na lista do CRC. */
+  /* ── Resolve o telefone REAL de um contato ──
+     O WhatsApp novo endereça conversas por "LID" (@lid) — um identificador de
+     privacidade que NÃO é o número de telefone. Aqui descobrimos o número de
+     verdade, essencial pra empresa conseguir entrar em contato.
+       1. @s.whatsapp.net → já é o telefone
+       2. @lid → tenta o "alt" que vem junto da própria mensagem (participant_pn),
+                 depois o mapa LID→telefone do Baileys (preenchido na descriptografia)
+     Retorna só dígitos do telefone, ou null se não der pra resolver (nesse caso
+     NÃO mostramos o LID como se fosse número). */
+  async _resolvePhone(jid, msg, sock) {
+    if (!jid) return null
+    const digits = (j) => String(j).split('@')[0].split(':')[0]
+
+    if (jid.endsWith('@s.whatsapp.net')) return digits(jid)
+
+    if (jid.endsWith('@lid')) {
+      // 1. alt no envelope da mensagem (mais confiável)
+      const alt = msg?.key?.remoteJidAlt
+      if (alt && String(alt).endsWith('@s.whatsapp.net')) return digits(alt)
+      // 2. mapa LID→PN do Baileys
+      try {
+        const pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(jid)
+        if (pn && String(pn).endsWith('@s.whatsapp.net')) return digits(pn)
+      } catch (_) { /* mapa ainda não tem — cai no null */ }
+      return null
+    }
+
+    // outros formatos: usa os dígitos como estão
+    return digits(jid)
+  }
+
+  /* ── Backfill: corrige o telefone de conversas @lid já existentes ──
+     Roda no connect. Usa só o mapa LOCAL do Baileys (getPNForLID não faz
+     requisição de rede — confirmado no código da lib), então é seguro e não
+     gera tráfego que possa parecer suspeito ao WhatsApp. */
+  async _backfillLidPhones(sessionId, sock) {
+    try {
+      const rows = this.db.prepare(
+        "SELECT id, phone, name FROM conversations WHERE session_id=? AND id LIKE '%@lid'"
+      ).all(sessionId)
+      let healed = 0
+      for (const r of rows) {
+        let pn = null
+        try { pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(r.id) } catch (_) {}
+        if (!pn || !String(pn).endsWith('@s.whatsapp.net')) continue
+        const phone = String(pn).split('@')[0].split(':')[0]
+        if (!phone || phone === r.phone) continue
+        this.db.prepare(
+          "UPDATE conversations SET phone=?, name=CASE WHEN (name IS NULL OR name='' OR name=phone) THEN ? ELSE name END WHERE id=? AND session_id=?"
+        ).run(phone, phone, r.id, sessionId)
+        healed++
+      }
+      if (healed) console.log(`[lid] ${sessionId}: ${healed} telefone(s) de conversa corrigido(s)`)
+    } catch (e) {
+      console.error('[lid] backfill falhou (não-fatal):', e.message)
+    }
+  }
+
   _ensureConversation(jid, sessionId) {
     const phone = jid.split('@')[0]
     this.db.prepare(`
