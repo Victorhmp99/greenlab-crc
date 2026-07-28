@@ -393,6 +393,42 @@ export class SessionManager {
     }
   }
 
+  /* ── Auto-recuperação (watchdog) ──
+     MAX_RETRIES esgotado marcava a sessão como offline PARA SEMPRE, exigindo
+     alguém clicar em "Reconectar" na mão. Foi o que manteve todos os números
+     mortos na queda do WhatsApp em 2026-07-28: o problema externo passou, mas
+     nada tentava de novo. Este watchdog volta a tentar de tempos em tempos.
+     Só mexe em sessões JÁ VINCULADAS (creds com me.id) — nunca gera QR sozinho
+     nem toca em sessão deslogada de propósito. */
+  startWatchdog(intervalMs = 5 * 60 * 1000) {
+    setInterval(() => {
+      try {
+        const offline = this.db.prepare("SELECT * FROM sessions WHERE status = 'disconnected'").all()
+        for (const s of offline) {
+          if (this.sockets.has(s.id) || this.connecting.has(s.id)) continue   // já em uso
+          let registered = false
+          try {
+            const credsPath = path.join(SESSIONS_DIR, s.id, 'creds.json')
+            if (fs.existsSync(credsPath)) {
+              registered = !!JSON.parse(fs.readFileSync(credsPath, 'utf8'))?.me?.id
+            }
+          } catch (_) {}
+          if (!registered) continue   // nunca vinculada / deslogada — não insiste
+
+          console.log(`🔄 [watchdog] tentando religar sessão offline: ${s.name}`)
+          this.retries.delete(s.id)   // zera o contador pra ter um ciclo limpo
+          this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(s.id)
+          this._emit(s.id, 'session:update', { sessionId: s.id, status: 'connecting' })
+          this.connect(s.id, s.name).catch(e =>
+            console.error(`[watchdog] falha ao religar ${s.name}:`, e.message)
+          )
+        }
+      } catch (e) {
+        console.error('[watchdog] erro:', e.message)   // nunca pode derrubar o processo
+      }
+    }, intervalMs).unref()
+  }
+
   /* ── Connect ──
      pairingPhone (opcional): quando informado, pareia por CÓDIGO (8 dígitos)
      em vez de QR — pode ser feito 100% à distância, digitando o código no
@@ -562,7 +598,14 @@ export class SessionManager {
       })
 
     sock.ev.on('messages.upsert', ({ messages, type }) => {
-      if (type !== 'notify') return
+      // 'notify' = mensagem chegando agora, em tempo real.
+      // 'append' = mensagem que chegou enquanto estávamos FORA DO AR; o WhatsApp
+      //   guarda e entrega tudo na reconexão. Antes eram DESCARTADAS aqui — era
+      //   a causa real de "sumiram mensagens depois que o sistema caiu".
+      //   (Baileys: upsertMessage(msg, node.attrs.offline ? 'append' : 'notify'))
+      //   Não há risco de inundar com histórico antigo: sync de histórico vem
+      //   por outro evento (messaging-history.set), que está desligado.
+      if (type !== 'notify' && type !== 'append') return
       for (const msg of messages) {
         const jid = msg.key.remoteJid
         if (!jid || jid === 'status@broadcast' || jid.endsWith('@g.us')) continue
@@ -622,6 +665,17 @@ export class SessionManager {
     const name   = msg.pushName || phone || 'Contato'
     const media  = detectMediaType(msg)
 
+    // 0. TRAVA DE DUPLICATA: grava a mensagem ANTES de qualquer efeito colateral.
+    //    A mesma mensagem pode chegar duas vezes (ex: em tempo real e de novo no
+    //    lote de recuperação pós-queda). Se já existe, changes=0 e paramos aqui —
+    //    senão o contador de não-lidas subiria em dobro e a mensagem apareceria
+    //    duplicada na tela.
+    const ins = this.db.prepare(`
+      INSERT OR IGNORE INTO messages(id,conversation_id,session_id,from_me,body,media_type,timestamp)
+      VALUES(?,?,?,?,?,?,?)
+    `).run(msgId, jid, sessionId, fromMe ? 1 : 0, body, media?.type ?? null, ts)
+    if (ins.changes === 0) return   // já tínhamos essa mensagem
+
     // 1. Salva/atualiza conversa imediatamente
     const exists = this.db.prepare('SELECT id FROM conversations WHERE id=? AND session_id=?').get(jid, sessionId)
     if (exists) {
@@ -642,13 +696,7 @@ export class SessionManager {
       `).run(jid, sessionId, name, phone ?? '', body, ts, fromMe ? 0 : 1)
     }
 
-    // 2. Salva mensagem imediatamente (sem media_url ainda)
-    try {
-      this.db.prepare(`
-        INSERT OR IGNORE INTO messages(id,conversation_id,session_id,from_me,body,media_type,timestamp)
-        VALUES(?,?,?,?,?,?,?)
-      `).run(msgId, jid, sessionId, fromMe ? 1 : 0, body, media?.type ?? null, ts)
-    } catch (_) { /* duplicata */ }
+    // 2. (mensagem já foi gravada no passo 0, que serve de trava de duplicata)
 
     // 3. Emite para o frontend AGORA — UI não trava
     const conversation = this._getConversation(jid, sessionId)

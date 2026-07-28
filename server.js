@@ -100,6 +100,7 @@ try {
 
 sm.restoreAll().catch(console.error)
 sm.startCleanupSchedule()   // limpeza periódica de mídia/mensagens antigas
+sm.startWatchdog()          // religa sozinho sessões que caíram (a cada 5min)
 
 /* ── Autenticação (Supabase — mesma conta do CRM) ─────────────
    O acesso de cada pessoa a cada empresa vem de user_memberships,
