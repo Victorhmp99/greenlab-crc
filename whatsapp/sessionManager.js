@@ -409,7 +409,12 @@ export class SessionManager {
       fs.mkdirSync(dir, { recursive: true })
 
       const { state, saveCreds } = await useMultiFileAuthState(dir)
-      const { version }          = await fetchLatestBaileysVersion()
+      // fetchLatestBaileysVersion() está devolvendo uma versão que o WhatsApp
+      // rejeita agora com "code=405 Connection Failure" (queda simultânea de
+      // TODAS as sessões em 2026-07-19) — problema atual e documentado
+      // (github.com/WhiskeySockets/Baileys/issues/2370), confirmado por
+      // dezenas de usuários com a mesma correção: fixar a versão manualmente.
+      const version = [2, 3000, 1033893291]
 
       const sock = makeWASocket({
         version,
