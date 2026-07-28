@@ -174,7 +174,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 #messages-list::-webkit-scrollbar { width: 4px; }
 #messages-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
-.msg-group { display: flex; flex-direction: column; margin-bottom: 4px; position: relative; }
+.msg-group { display: flex; flex-direction: column; margin-bottom: 4px; }
 .msg-group.from-me   { align-items: flex-end; }
 .msg-group.from-them { align-items: flex-start; }
 
@@ -188,18 +188,20 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 .msg-time { font-size: 10px; color: var(--text-3); margin-top: 2px; padding: 0 4px; display: inline-flex; align-items: center; gap: 4px; }
 .msg-edited-tag { font-style: italic; opacity: .7; }
 
-/* Lápis de editar: some por padrão, aparece ao passar o mouse na mensagem */
+/* Lápis de editar: fica DENTRO da linha do horário (nunca estoura a tela —
+   antes era posicionado fora da bolha, o que "vazava" da margem no mobile
+   onde não tem espaço sobrando à esquerda). Some por padrão no desktop,
+   aparece ao passar o mouse; no touch fica sempre visível. */
 .msg-edit-btn {
-  position: absolute; top: 4px; left: -26px;
-  width: 20px; height: 20px; border: none; border-radius: 50%;
-  background: var(--bg-2); color: var(--text-3); cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  opacity: 0; transition: opacity .15s, color .15s; pointer-events: none;
+  width: 16px; height: 16px; border: none; border-radius: 50%; flex-shrink: 0;
+  background: transparent; color: var(--text-3); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity .15s, color .15s;
 }
-.msg-group.from-me:hover .msg-edit-btn { opacity: 1; pointer-events: auto; }
+.msg-group.from-me:hover .msg-edit-btn { opacity: 1; }
 .msg-edit-btn:hover { color: var(--green); }
 @media (hover: none) and (pointer: coarse) {
-  .msg-edit-btn { opacity: 1; pointer-events: auto; }   /* touch: sem hover, sempre visível */
+  .msg-edit-btn { opacity: 1; }   /* touch: sem hover, sempre visível */
 }
 
 #edit-banner {
@@ -377,9 +379,16 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 }
 .lightbox.hidden { display: none; }
 .lightbox-close {
-  position: absolute; top: 20px; right: 24px;
-  background: none; border: none; color: #fff;
-  font-size: 28px; cursor: pointer; opacity: .7;
+  /* fixed (não absolute) + env(safe-area-inset-*): garante que fique dentro
+     da área visível mesmo em celular com notch ou barra de navegador que
+     muda de tamanho (o "vh" do mobile engana o inset do pai) */
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  width: 44px; height: 44px;               /* alvo de toque adequado (padrão Apple/Google) */
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.4); border: none; border-radius: 50%; color: #fff;
+  font-size: 24px; cursor: pointer; opacity: .85; z-index: 1001;
 }
 .lightbox-close:hover { opacity: 1; }
 #lightbox-content img, #lightbox-content video {

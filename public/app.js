@@ -908,9 +908,8 @@ function appendMessage(msg) {
     : ''
 
   div.innerHTML = `
-    ${editBtn}
     <div class="msg-bubble">${renderMediaContent(msg)}</div>
-    <span class="msg-time">${editedTag}${formatTime(msg.timestamp)}${statusHtml}</span>
+    <span class="msg-time">${editBtn}${editedTag}${formatTime(msg.timestamp)}${statusHtml}</span>
   `
   list.appendChild(div)
 }
