@@ -487,6 +487,8 @@ export class SessionManager {
 
         if (connection === 'close') {
           const code            = lastDisconnect?.error?.output?.statusCode
+          const errMsg          = lastDisconnect?.error?.message
+          console.log(`[close] [${name}] code=${code} msg=${errMsg}`)
           const loggedOut       = code === DisconnectReason.loggedOut
           const restartRequired = code === DisconnectReason.restartRequired
           this.sockets.delete(sessionId)
