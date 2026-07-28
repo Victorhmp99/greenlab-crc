@@ -279,6 +279,8 @@ export class SessionManager {
     this.tenantCache = new Map() // sessionId → tenant_id (evita query no banco a cada evento)
     this.pairingRequested = new Set() // sessionId — evita pedir código novo a cada reconexão do handshake
     this.restartCounts = new Map()    // sessionId → nº de restarts (515) durante o pareamento
+    this.wdAttempts = new Map()       // sessionId → nº de tentativas do watchdog (define o espaçamento)
+    this.wdNextTry  = new Map()       // sessionId → timestamp da próxima tentativa permitida
   }
 
   /* ── Throttle de envio (anti-banimento) ──
@@ -397,15 +399,36 @@ export class SessionManager {
      MAX_RETRIES esgotado marcava a sessão como offline PARA SEMPRE, exigindo
      alguém clicar em "Reconectar" na mão. Foi o que manteve todos os números
      mortos na queda do WhatsApp em 2026-07-28: o problema externo passou, mas
-     nada tentava de novo. Este watchdog volta a tentar de tempos em tempos.
+     nada tentava de novo.
+
+     AGE SÓ EM SESSÃO REALMENTE CAÍDA e com ESPAÇAMENTO CRESCENTE entre as
+     tentativas (5min → 10 → 20 → 40 → 60, teto de 1h). Insistir de 5 em 5
+     minutos numa queda longa do WhatsApp seria inútil e ainda pareceria abuso
+     do lado deles. O contador zera assim que a sessão volta (evento 'open'),
+     então uma queda pontual continua sendo recuperada rápido.
+
      Só mexe em sessões JÁ VINCULADAS (creds com me.id) — nunca gera QR sozinho
      nem toca em sessão deslogada de propósito. */
-  startWatchdog(intervalMs = 5 * 60 * 1000) {
+  startWatchdog(tickMs = 60 * 1000) {
+    const BASE_MS = 5 * 60 * 1000    // 1ª tentativa: 5 min após cair
+    const MAX_MS  = 60 * 60 * 1000   // teto: no máximo 1 em 1 hora
+
     setInterval(() => {
       try {
-        const offline = this.db.prepare("SELECT * FROM sessions WHERE status = 'disconnected'").all()
+        // Inclui 'connecting' de propósito: se um erro raro derrubar o connect()
+        // antes do handler de queda existir, a sessão ficaria marcada como
+        // "conectando" PARA SEMPRE e nunca seria socorrida. O filtro abaixo
+        // (sem socket vivo e sem conexão em curso) distingue a que travou da
+        // que está genuinamente conectando agora.
+        const offline = this.db.prepare(
+          "SELECT * FROM sessions WHERE status IN ('disconnected','connecting')"
+        ).all()
+        const now = Date.now()
+
         for (const s of offline) {
-          if (this.sockets.has(s.id) || this.connecting.has(s.id)) continue   // já em uso
+          // Só age se estiver REALMENTE caída: sem socket vivo e sem conexão em curso
+          if (this.sockets.has(s.id) || this.connecting.has(s.id)) continue
+
           let registered = false
           try {
             const credsPath = path.join(SESSIONS_DIR, s.id, 'creds.json')
@@ -415,8 +438,18 @@ export class SessionManager {
           } catch (_) {}
           if (!registered) continue   // nunca vinculada / deslogada — não insiste
 
-          console.log(`🔄 [watchdog] tentando religar sessão offline: ${s.name}`)
-          this.retries.delete(s.id)   // zera o contador pra ter um ciclo limpo
+          // Agenda a 1ª tentativa; nas seguintes, respeita o intervalo crescente
+          const nextTry = this.wdNextTry.get(s.id)
+          if (nextTry === undefined) { this.wdNextTry.set(s.id, now + BASE_MS); continue }
+          if (now < nextTry) continue
+
+          const attempt = (this.wdAttempts.get(s.id) || 0) + 1
+          this.wdAttempts.set(s.id, attempt)
+          const delay = Math.min(BASE_MS * 2 ** attempt, MAX_MS)
+          this.wdNextTry.set(s.id, now + delay)
+
+          console.log(`🔄 [watchdog] religando "${s.name}" (tentativa ${attempt}; próxima em ${Math.round(delay / 60000)}min)`)
+          this.retries.delete(s.id)   // zera o backoff interno pra ter um ciclo limpo
           this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(s.id)
           this._emit(s.id, 'session:update', { sessionId: s.id, status: 'connecting' })
           this.connect(s.id, s.name).catch(e =>
@@ -426,7 +459,7 @@ export class SessionManager {
       } catch (e) {
         console.error('[watchdog] erro:', e.message)   // nunca pode derrubar o processo
       }
-    }, intervalMs).unref()
+    }, tickMs).unref()
   }
 
   /* ── Connect ──
@@ -520,6 +553,10 @@ export class SessionManager {
           this.retries.delete(sessionId)
           this.pairingRequested.delete(sessionId)
           this.restartCounts.delete(sessionId)
+          // Voltou: zera o espaçamento do watchdog, pra uma queda futura ser
+          // socorrida rápido de novo (e não herdar o intervalo longo da anterior)
+          this.wdAttempts.delete(sessionId)
+          this.wdNextTry.delete(sessionId)
           const phone = '+' + (sock.user?.id?.split(':')[0] || '')
           this.db.prepare('UPDATE sessions SET status=?,phone=? WHERE id=?').run('connected', phone, sessionId)
           this._emit(sessionId, 'session:update', { sessionId, status: 'connected', phone })
@@ -932,6 +969,8 @@ export class SessionManager {
     this.lastSend.delete(sessionId)
     this.pairingRequested.delete(sessionId)
     this.restartCounts.delete(sessionId)
+    this.wdAttempts.delete(sessionId)
+    this.wdNextTry.delete(sessionId)
     const sock = this.sockets.get(sessionId)
     if (sock) { try { await sock.logout() } catch (_) {} }
     await this._teardownSocket(sessionId)
@@ -1015,6 +1054,9 @@ export class SessionManager {
     this.retries.delete(sessionId)
     this.pairingRequested.delete(sessionId)
     this.restartCounts.delete(sessionId)
+    // Reconexão manual = intenção explícita: zera o espaçamento do watchdog
+    this.wdAttempts.delete(sessionId)
+    this.wdNextTry.delete(sessionId)
     this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
     this._emit(sessionId, 'session:update', { sessionId, status: 'connecting' })
     await this.connect(sessionId, name)
