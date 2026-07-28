@@ -409,12 +409,15 @@ export class SessionManager {
       fs.mkdirSync(dir, { recursive: true })
 
       const { state, saveCreds } = await useMultiFileAuthState(dir)
-      // fetchLatestBaileysVersion() está devolvendo uma versão que o WhatsApp
-      // rejeita agora com "code=405 Connection Failure" (queda simultânea de
-      // TODAS as sessões em 2026-07-19) — problema atual e documentado
-      // (github.com/WhiskeySockets/Baileys/issues/2370), confirmado por
-      // dezenas de usuários com a mesma correção: fixar a versão manualmente.
-      const version = [2, 3000, 1033893291]
+      // 2026-07-28: TODAS as sessões caíram com "code=405 Connection Failure".
+      // O WhatsApp passou a rejeitar a versão que fetchLatestBaileysVersion()
+      // retorna ([2,3000,1035194821]) — reproduzido também fora do Railway,
+      // com credenciais novas, então não é bloqueio de IP nem das contas.
+      // Esta é a versão do PR #2728 do Baileys (26/07, ainda não lançada em
+      // release, por isso o fetch não a devolve). Testada antes de aplicar:
+      // handshake completa e recebe QR normalmente.
+      // Quando sair release nova do Baileys, dá pra voltar ao fetch dinâmico.
+      const version = [2, 3000, 1043857760]
 
       const sock = makeWASocket({
         version,
