@@ -74,6 +74,7 @@ export function initDB() {
     `ALTER TABLE messages ADD COLUMN media_url TEXT`,
     `ALTER TABLE sessions ADD COLUMN tenant_id TEXT DEFAULT 'default'`,
     `ALTER TABLE sessions ADD COLUMN created_by TEXT DEFAULT ''`,
+    `ALTER TABLE messages ADD COLUMN edited INTEGER DEFAULT 0`,
   ]) {
     try { db.exec(col) } catch (_) { /* coluna já existe */ }
   }

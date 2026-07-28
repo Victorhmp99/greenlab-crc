@@ -166,13 +166,15 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   color: var(--text-3); transition: color .15s, background .15s; text-decoration: none;
 }
 .btn-wa-open:hover { color: var(--green); background: var(--green-dim); }
+.btn-wa-open.spinning svg { animation: spin .7s linear infinite; }
+.btn-wa-open { border: none; background: transparent; cursor: pointer; }
 
 /* ── Mensagens ── */
 #messages-list { flex: 1; min-height: 0; padding: 16px 20px; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
 #messages-list::-webkit-scrollbar { width: 4px; }
 #messages-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
-.msg-group { display: flex; flex-direction: column; margin-bottom: 4px; }
+.msg-group { display: flex; flex-direction: column; margin-bottom: 4px; position: relative; }
 .msg-group.from-me   { align-items: flex-end; }
 .msg-group.from-them { align-items: flex-start; }
 
@@ -184,6 +186,33 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 .from-them .msg-bubble { background: var(--bubble-in);  border-bottom-left-radius: 2px;  color: var(--text); }
 
 .msg-time { font-size: 10px; color: var(--text-3); margin-top: 2px; padding: 0 4px; display: inline-flex; align-items: center; gap: 4px; }
+.msg-edited-tag { font-style: italic; opacity: .7; }
+
+/* Lápis de editar: some por padrão, aparece ao passar o mouse na mensagem */
+.msg-edit-btn {
+  position: absolute; top: 4px; left: -26px;
+  width: 20px; height: 20px; border: none; border-radius: 50%;
+  background: var(--bg-2); color: var(--text-3); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity .15s, color .15s; pointer-events: none;
+}
+.msg-group.from-me:hover .msg-edit-btn { opacity: 1; pointer-events: auto; }
+.msg-edit-btn:hover { color: var(--green); }
+@media (hover: none) and (pointer: coarse) {
+  .msg-edit-btn { opacity: 1; pointer-events: auto; }   /* touch: sem hover, sempre visível */
+}
+
+#edit-banner {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 14px; font-size: 12px; color: var(--green);
+  background: var(--green-dim); border-top: 1px solid var(--border);
+}
+#edit-banner span { flex: 1; }
+#edit-banner button {
+  border: none; background: transparent; color: var(--text-3); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 2px 4px;
+}
+#edit-banner button:hover { color: var(--text); }
 .msg-status { display: inline-flex; align-items: center; }
 .msg-status .tick { display: block; }
 

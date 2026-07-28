@@ -37,6 +37,7 @@ const state = {
   activeSession:      null,
   activeConversation: null,
   pendingFile:        null,
+  editingMessage:     null,   // {id, body} — mensagem sendo editada, ou null
   pendingQrSession:   null,   // sessão cujo QR estamos aguardando (modal aberto)
   connectMethod:      'qr',   // 'qr' ou 'code' — método escolhido no modal de adicionar
   mobileView:         'sessions', // 'sessions' | 'conversations' | 'chat' — só importa em tela estreita
@@ -126,6 +127,17 @@ socket.on('message:media', ({ msgId, sessionId, convId, mediaType, mediaUrl }) =
 })
 
 // Status das mensagens enviadas (✓ enviado, ✓✓ entregue, ✓✓ azul lido)
+socket.on('message:edited', ({ sessionId, convId, msgId, body }) => {
+  const active = state.activeConversation
+  if (!active || active.id !== convId || active.session_id !== sessionId) return
+  const bubble = document.querySelector(`#msg-${CSS.escape(msgId)} .msg-bubble`)
+  if (bubble) bubble.textContent = body
+  const timeEl = document.querySelector(`#msg-${CSS.escape(msgId)} .msg-time`)
+  if (timeEl && !timeEl.querySelector('.msg-edited-tag')) {
+    timeEl.insertAdjacentHTML('afterbegin', '<span class="msg-edited-tag">editada</span>')
+  }
+})
+
 socket.on('message:status', ({ sessionId, convId, msgId, status }) => {
   const active = state.activeConversation
   if (!active || active.id !== convId || active.session_id !== sessionId) return
@@ -789,6 +801,14 @@ async function openConversation(convId, sessionId) {
   conv.unread_count = 0
   renderConversations()
 
+  await loadMessages(convId, sessionId)
+  document.getElementById('msg-input').focus()
+}
+
+// Busca as mensagens do servidor e redesenha a lista — usado ao abrir a
+// conversa e no botão de atualizar manual (fallback caso o socket perca
+// algum evento em tempo real)
+async function loadMessages(convId, sessionId) {
   const params = new URLSearchParams({ session_id: sessionId })
   const res    = await fetch(`/api/conversations/${encodeURIComponent(convId)}/messages?${params}`, { headers: TENANT_HEADERS })
   const msgs   = await res.json()
@@ -797,8 +817,21 @@ async function openConversation(convId, sessionId) {
   list.innerHTML = ''
   msgs.forEach(m => appendMessage(m))
   scrollToBottom()
+}
 
-  document.getElementById('msg-input').focus()
+// Botão "Atualizar" no cabeçalho da conversa aberta
+async function refreshMessages() {
+  const conv = state.activeConversation
+  if (!conv) return
+  const btn = document.getElementById('chat-refresh-btn')
+  btn.classList.add('spinning')
+  try {
+    await loadMessages(conv.id, conv.session_id)
+  } catch (e) {
+    showToast('Erro ao atualizar: ' + e.message, 'error')
+  } finally {
+    btn.classList.remove('spinning')
+  }
 }
 
 async function loadProfilePic(conv) {
@@ -851,6 +884,8 @@ function renderMediaContent(msg) {
   return esc(msg.body)
 }
 
+const EDIT_WINDOW_MS = 15 * 60 * 1000   // mesma janela que o servidor aplica
+
 function appendMessage(msg) {
   const list = document.getElementById('messages-list')
   const side = msg.from_me ? 'from-me' : 'from-them'
@@ -861,10 +896,21 @@ function appendMessage(msg) {
   const statusHtml = msg.from_me
     ? `<span class="msg-status">${statusIcon(msg.status || 'sent')}</span>`
     : ''
+  const editedTag = msg.edited ? `<span class="msg-edited-tag">editada</span>` : ''
+
+  // Editar: só texto próprio, sem mídia, dentro da janela de 15min
+  const canEdit = msg.from_me && !msg.media_type &&
+    (Date.now() - new Date(msg.timestamp).getTime()) < EDIT_WINDOW_MS
+  const editBtn = canEdit
+    ? `<button class="msg-edit-btn" title="Editar mensagem" data-msg-id="${esc(msg.id)}" data-body="${esc(msg.body)}" onclick="startEditMessage(this.dataset.msgId, this.dataset.body)">
+         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+       </button>`
+    : ''
 
   div.innerHTML = `
+    ${editBtn}
     <div class="msg-bubble">${renderMediaContent(msg)}</div>
-    <span class="msg-time">${formatTime(msg.timestamp)}${statusHtml}</span>
+    <span class="msg-time">${editedTag}${formatTime(msg.timestamp)}${statusHtml}</span>
   `
   list.appendChild(div)
 }
@@ -884,6 +930,9 @@ function statusIcon(status) {
 async function sendMessage() {
   const conv  = state.activeConversation
   if (!conv) return
+
+  // Editando uma mensagem existente em vez de mandar uma nova
+  if (state.editingMessage) { await confirmEditMessage(); return }
 
   // Se há arquivo pendente, envia o arquivo
   if (state.pendingFile) { await sendPendingFile(); return }
@@ -916,6 +965,59 @@ async function sendMessage() {
 
 function onMsgKeydown(e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
+  if (e.key === 'Escape' && state.editingMessage) { cancelEditMessage() }
+}
+
+/* ── Editar mensagem enviada (estilo WhatsApp) ───────────────
+   Clique no lápis que aparece ao passar o mouse numa mensagem sua (só texto,
+   até 15min) — preenche o campo de digitação em "modo edição"; Enter confirma,
+   Esc cancela. */
+function startEditMessage(msgId, currentBody) {
+  const conv = state.activeConversation
+  if (!conv) return
+  state.editingMessage = { id: msgId }
+  const input = document.getElementById('msg-input')
+  input.value = currentBody
+  autoResize(input)
+  input.focus()
+  document.getElementById('edit-banner').classList.remove('hidden')
+}
+
+function cancelEditMessage() {
+  state.editingMessage = null
+  const input = document.getElementById('msg-input')
+  input.value = ''
+  autoResize(input)
+  document.getElementById('edit-banner').classList.add('hidden')
+}
+
+async function confirmEditMessage() {
+  const conv  = state.activeConversation
+  const edit  = state.editingMessage
+  if (!conv || !edit) return
+  const input = document.getElementById('msg-input')
+  const text  = input.value.trim()
+  if (!text) return
+
+  const btn = document.getElementById('send-btn')
+  btn.disabled = true
+  try {
+    const res = await fetch(`/api/conversations/${encodeURIComponent(conv.id)}/messages/${encodeURIComponent(edit.id)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
+      body: JSON.stringify({ body: text, session_id: conv.session_id }),
+    })
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}))
+      showToast(e.error || 'Erro ao editar', 'error')
+      return   // mantém o modo edição pro usuário tentar de novo/cancelar
+    }
+    cancelEditMessage()
+  } catch (e) {
+    showToast('Erro de conexão: ' + e.message, 'error')
+  } finally {
+    btn.disabled = false
+    input.focus()
+  }
 }
 
 /* ── Enviar arquivo ───────────────────────────────────────── */

@@ -719,6 +719,35 @@ export class SessionManager {
     return result
   }
 
+  /* ── Editar mensagem já enviada (só as que são from_me) ──
+     WhatsApp só aceita edição dentro de uma janela de tempo (~15min) e só de
+     mensagens de texto enviadas por mim mesmo — Baileys/servidor rejeitam o
+     resto sozinhos, mas validamos o básico aqui pra dar erro claro. */
+  async editMessage(sessionId, jid, msgId, newText) {
+    const sock = this._requireSock(sessionId)
+    const row = this.db.prepare(
+      'SELECT from_me, media_type, timestamp FROM messages WHERE id=? AND session_id=?'
+    ).get(msgId, sessionId)
+    if (!row) throw new Error('Mensagem não encontrada')
+    if (!row.from_me) throw new Error('Só é possível editar mensagens enviadas por você')
+    if (row.media_type) throw new Error('Só é possível editar mensagens de texto')
+
+    const AGE_LIMIT_MS = 15 * 60 * 1000
+    if (Date.now() - new Date(row.timestamp).getTime() > AGE_LIMIT_MS) {
+      throw new Error('Essa mensagem passou do prazo de edição (15 minutos)')
+    }
+
+    await this._throttle(sessionId)
+    const key = { remoteJid: jid, fromMe: true, id: msgId }
+    await sock.sendMessage(jid, { text: newText, edit: key })
+
+    this.db.prepare('UPDATE messages SET body=?, edited=1 WHERE id=? AND session_id=?')
+      .run(newText, msgId, sessionId)
+
+    this._emit(sessionId, 'message:edited', { sessionId, convId: jid, msgId, body: newText })
+    return true
+  }
+
   /* ── Enviar mídia ── */
   async sendMedia(sessionId, jid, file, caption = '') {
     const sock = this._requireSock(sessionId)

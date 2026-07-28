@@ -493,6 +493,27 @@ app.post('/api/conversations/:jid/messages', async (req, res) => {
   }
 })
 
+// Edita uma mensagem já enviada (estilo WhatsApp — só texto, só até 15min, só suas próprias)
+app.put('/api/conversations/:jid/messages/:msgId', async (req, res) => {
+  const { body, session_id } = req.body
+  if (!body?.trim() || !session_id) return res.status(400).json({ error: 'body e session_id obrigatórios' })
+  if (body.length > 10000) return res.status(400).json({ error: 'Mensagem muito longa (máx. 10.000 caracteres)' })
+
+  const tenants = getTenants(req)
+  if (tenants.length) {
+    const s = db.prepare('SELECT tenant_id FROM sessions WHERE id = ?').get(session_id)
+    if (!s || !tenants.includes(s.tenant_id)) return res.status(403).json({ error: 'Sem permissão' })
+  }
+
+  try {
+    await sm.editMessage(session_id, req.params.jid, req.params.msgId, body.trim())
+    res.json({ ok: true })
+  } catch (e) {
+    console.error('[editMessage] ERRO:', e.message)
+    res.status(400).json({ error: e.message })
+  }
+})
+
 /* Envia mensagem para um número NOVO (nunca escreveu antes).
    PAUSADO 2026-07-17: mandar 1a mensagem pra contato frio via cliente não-oficial
    (Baileys) é o padrão nº1 que o sistema anti-spam do WhatsApp marca como

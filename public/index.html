@@ -278,6 +278,9 @@
           <span id="chat-meta">–</span>
           <span id="chat-presence"></span>
         </div>
+        <button id="chat-refresh-btn" class="btn-wa-open" title="Atualizar mensagens" onclick="refreshMessages()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
         <a id="chat-wa-link" href="#" target="_blank" class="btn-wa-open" title="Abrir no WhatsApp Web">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
         </a>
@@ -285,6 +288,11 @@
 
       <div id="messages-list" class="list-scroll"></div>
 
+      <div id="edit-banner" class="hidden">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+        <span>Editando mensagem</span>
+        <button title="Cancelar edição" onclick="cancelEditMessage()">✕</button>
+      </div>
       <div id="chat-input-area">
         <!-- Anexo -->
         <input id="file-input" type="file" accept="image/*,video/*,application/pdf,.doc,.docx,.xls,.xlsx" style="display:none" onchange="onFileSelected(this)" />
