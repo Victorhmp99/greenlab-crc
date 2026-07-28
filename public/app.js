@@ -1178,6 +1178,81 @@ document.addEventListener('mouseup',    () => stopRecording())
 document.addEventListener('touchend',   () => stopRecording())
 document.addEventListener('touchcancel',() => stopRecording())
 
+/* ── Pressionar e segurar numa mensagem → menu "Copiar" / "Editar" ──
+   No celular não existe hover, então o toque longo é o jeito nativo de
+   acessar ações da mensagem (igual WhatsApp de verdade). No desktop, o
+   botão direito faz a mesma coisa. */
+let msgPressTimer  = null
+let msgPressTarget = null
+
+function findMsgGroup(el) { return el.closest('.msg-group') }
+
+document.getElementById('messages-list').addEventListener('touchstart', (e) => {
+  const group = findMsgGroup(e.target)
+  if (!group) return
+  msgPressTarget = group
+  msgPressTimer = setTimeout(() => {
+    if (navigator.vibrate) navigator.vibrate(15)   // feedback tátil, se o aparelho suportar
+    openMessageMenu(group, e.touches[0].clientX, e.touches[0].clientY)
+  }, 450)
+}, { passive: true })
+
+document.getElementById('messages-list').addEventListener('touchend',  () => clearTimeout(msgPressTimer))
+document.getElementById('messages-list').addEventListener('touchmove', () => clearTimeout(msgPressTimer))
+
+// Desktop: botão direito abre o mesmo menu, sem precisar segurar
+document.getElementById('messages-list').addEventListener('contextmenu', (e) => {
+  const group = findMsgGroup(e.target)
+  if (!group) return
+  e.preventDefault()
+  openMessageMenu(group, e.clientX, e.clientY)
+})
+
+function openMessageMenu(group, x, y) {
+  closeMessageMenu()
+  const msgId  = group.id.replace('msg-', '')
+  const bubble = group.querySelector('.msg-bubble')
+  const text   = bubble?.textContent || ''
+  const editBtn = group.querySelector('.msg-edit-btn')   // só existe se for editável (from_me, texto, <15min)
+
+  const menu = document.createElement('div')
+  menu.id = 'msg-context-menu'
+  menu.className = 'msg-context-menu'
+  menu.innerHTML = `
+    <button data-action="copy">📋 Copiar texto</button>
+    ${editBtn ? `<button data-action="edit">✏️ Editar</button>` : ''}
+  `
+  document.body.appendChild(menu)
+
+  // Posiciona sem estourar a tela
+  const maxX = window.innerWidth  - menu.offsetWidth  - 8
+  const maxY = window.innerHeight - menu.offsetHeight - 8
+  menu.style.left = Math.min(x, maxX) + 'px'
+  menu.style.top  = Math.min(y, maxY) + 'px'
+
+  menu.addEventListener('click', (e) => {
+    const action = e.target.closest('button')?.dataset.action
+    if (action === 'copy') {
+      navigator.clipboard?.writeText(text).then(
+        () => showToast('Texto copiado', 'info'),
+        () => showToast('Não foi possível copiar', 'error')
+      )
+    } else if (action === 'edit' && editBtn) {
+      editBtn.click()   // reaproveita a mesma lógica do lápis
+    }
+    closeMessageMenu()
+  })
+
+  setTimeout(() => document.addEventListener('click', closeMessageMenuOnce), 0)
+}
+function closeMessageMenuOnce(e) {
+  if (!e.target.closest('#msg-context-menu')) closeMessageMenu()
+}
+function closeMessageMenu() {
+  document.getElementById('msg-context-menu')?.remove()
+  document.removeEventListener('click', closeMessageMenuOnce)
+}
+
 async function sendAudioFile(file, conv) {
   if (!conv) { console.error('[audio] conv is null'); return }
 
@@ -1237,6 +1312,50 @@ async function loadConversations() {
   if (!res.ok) { if (handleAuthFailure(res)) return; state.conversations = []; renderConversations(); return }
   state.conversations = await res.json()
   renderConversations()
+}
+
+// Botão "Atualizar todas as conversas" — recarrega TUDO (ignora o filtro de
+// número atual), conta quantas conversas têm mensagem nova desde a última
+// vez, e se a conversa aberta também mudou, recarrega ela também.
+async function refreshAllConversations() {
+  const btn = document.getElementById('btn-refresh-all')
+  btn.classList.add('spinning')
+  try {
+    const [convRes] = await Promise.all([
+      fetch('/api/conversations', { headers: TENANT_HEADERS }),
+      loadSessions(),
+    ])
+    if (!convRes.ok) { if (handleAuthFailure(convRes)) return; showToast('Erro ao atualizar', 'error'); return }
+    const freshAll = await convRes.json()
+
+    // Compara com o que já tínhamos pra contar o que é realmente novo
+    const prevByKey = new Map(state.conversations.map(c => [`${c.id}|${c.session_id}`, c]))
+    let newCount = 0
+    for (const c of freshAll) {
+      const prev = prevByKey.get(`${c.id}|${c.session_id}`)
+      if (!prev || new Date(c.last_message_at) > new Date(prev.last_message_at || 0)) newCount++
+    }
+
+    // Reaplica o filtro/busca atual (a API acima trouxe tudo, sem filtro)
+    const q = searchQuery.trim().toLowerCase()
+    state.conversations = freshAll.filter(c => {
+      if (state.activeSession && c.session_id !== state.activeSession.id) return false
+      if (q && !(c.name || c.phone || '').toLowerCase().includes(q)) return false
+      return true
+    })
+    renderConversations()
+
+    // Se a conversa aberta também recebeu mensagem, atualiza ela na hora
+    if (state.activeConversation) {
+      await loadMessages(state.activeConversation.id, state.activeConversation.session_id)
+    }
+
+    showToast(newCount > 0 ? `${newCount} conversa(s) com mensagem nova` : 'Tudo atualizado, nada de novo', 'info')
+  } catch (e) {
+    showToast('Erro de conexão: ' + e.message, 'error')
+  } finally {
+    btn.classList.remove('spinning')
+  }
 }
 
 /* ── Modais ───────────────────────────────────────────────── */

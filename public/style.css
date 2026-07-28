@@ -213,6 +213,20 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   font-size: 14px; line-height: 1; padding: 2px 4px;
 }
 #edit-banner button:hover { color: var(--text); }
+
+/* Menu de contexto da mensagem (toque longo / botão direito) */
+.msg-context-menu {
+  position: fixed; z-index: 2000; min-width: 160px;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.4); overflow: hidden;
+  animation: fadeInUp .12s ease;
+}
+.msg-context-menu button {
+  display: block; width: 100%; text-align: left; padding: 10px 14px;
+  background: none; border: none; color: var(--text); font-size: 13px; cursor: pointer;
+}
+.msg-context-menu button:hover { background: var(--green-dim); color: var(--green); }
+.msg-context-menu button + button { border-top: 1px solid var(--border); }
 .msg-status { display: inline-flex; align-items: center; }
 .msg-status .tick { display: block; }
 
@@ -322,6 +336,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   transition: color .15s, border-color .15s;
 }
 .btn-icon:hover { color: var(--green); border-color: var(--green); }
+.btn-icon.spinning svg { animation: spin .7s linear infinite; }
 
 /* Botão de ajuda/instalar — precisa se destacar dos outros ícones (touch não tem hover pra revelar o título) */
 .btn-help { color: var(--green); border-color: var(--green-dim); background: var(--green-dim); }
