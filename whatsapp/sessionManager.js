@@ -325,6 +325,7 @@ export class SessionManager {
     this.restartCounts = new Map()    // sessionId → nº de restarts (515) durante o pareamento
     this.wdAttempts = new Map()       // sessionId → nº de tentativas do watchdog (define o espaçamento)
     this.wdNextTry  = new Map()       // sessionId → timestamp da próxima tentativa permitida
+    this.alertedDown = new Set()      // sessões que já alertaram queda (evita repetir a cada retentativa)
   }
 
   /* ── Throttle de envio (anti-banimento) ──
@@ -359,6 +360,66 @@ export class SessionManager {
     if (this.push && tenant && event === 'message:new' && payload?.message && !payload.message.from_me) {
       this._pushIncoming(tenant, payload)
     }
+
+    // Número CAIU: avisa na hora. Antes só dava pra descobrir olhando a tela —
+    // e cada hora de número fora do ar é lead entrando e ninguém atendendo.
+    if (event === 'session:update' && tenant) {
+      // Só alerta QUEDA DE VERDADE: número que estava funcionando parou
+      // (perdeu conexão ou foi desvinculado no celular). QR não escaneado /
+      // erro de pareamento é sessão que nunca chegou a funcionar — alertar ali
+      // só geraria ruído.
+      const quedaReal = payload?.reason === 'max_retries' || payload?.reason === 'logged_out'
+
+      if (payload?.status === 'disconnected' && quedaReal) {
+        // Uma única vez por queda (o watchdog vai tentar religar várias vezes;
+        // não é pra disparar um alerta a cada tentativa)
+        if (!this.alertedDown.has(sessionId)) {
+          this.alertedDown.add(sessionId)
+          this._pushSessionDown(tenant, sessionId, payload.reason)
+        }
+      } else if (payload?.status === 'connected') {
+        // Voltou: avisa a recuperação (e rearma o alerta pra uma próxima queda)
+        if (this.alertedDown.delete(sessionId)) {
+          this._pushSessionUp(tenant, sessionId)
+        }
+      }
+    }
+  }
+
+  /* Nome amigável do número, pro texto do alerta */
+  _sessionName(sessionId) {
+    try {
+      return this.db.prepare('SELECT name FROM sessions WHERE id=?').get(sessionId)?.name || 'Número'
+    } catch (_) { return 'Número' }
+  }
+
+  _pushSessionDown(tenant, sessionId, reason) {
+    try {
+      const nome = this._sessionName(sessionId)
+      const motivo = reason === 'logged_out'
+        ? 'Foi desconectado no celular — precisa ler o QR Code de novo.'
+        : 'Sem conexão. O sistema já está tentando religar sozinho.'
+      console.log(`🔔 [alerta] "${nome}" caiu (${reason || 'sem motivo'})`)
+      this.push?.sendToTenant(tenant, {
+        title: `⚠️ WhatsApp "${nome}" fora do ar`,
+        body:  motivo,
+        tag:   `session-down-${sessionId}`,   // substitui o alerta anterior do mesmo número
+        data:  { sessionId, kind: 'session-down' },
+      }).catch(() => {})
+    } catch (_) { /* alerta nunca pode quebrar o fluxo principal */ }
+  }
+
+  _pushSessionUp(tenant, sessionId) {
+    try {
+      const nome = this._sessionName(sessionId)
+      console.log(`🔔 [alerta] "${nome}" voltou`)
+      this.push?.sendToTenant(tenant, {
+        title: `✅ WhatsApp "${nome}" reconectado`,
+        body:  'Voltou a receber mensagens normalmente.',
+        tag:   `session-down-${sessionId}`,
+        data:  { sessionId, kind: 'session-up' },
+      }).catch(() => {})
+    } catch (_) {}
   }
 
   /* Monta e dispara o push de uma mensagem recebida. Isolado num try/catch
@@ -794,8 +855,14 @@ export class SessionManager {
     }
   }
 
-  /* ── Download de mídia em background ── */
-  async _downloadMediaBg(msg, sessionId, msgId, jid, media, sock) {
+  /* ── Download de mídia em background ──
+     Com NOVA TENTATIVA: uma falha de rede/instabilidade deixava a foto ou o
+     áudio indisponível PARA SEMPRE (o atendente via o balão vazio e não tinha
+     como recuperar). Agora tenta de novo em 5s, 15s e 45s.
+     Erros permanentes (mensagem sem chave de mídia, mídia expirada no servidor
+     do WhatsApp) não são repetidos — insistir não traria o arquivo. */
+  async _downloadMediaBg(msg, sessionId, msgId, jid, media, sock, attempt = 1) {
+    const MAX_ATTEMPTS = 3
     // Limita downloads simultâneos — evita estouro de memória/CPU em rajadas de mídia
     const MAX_CONCURRENT = 4
     let waited = 0
@@ -824,7 +891,23 @@ export class SessionManager {
       // Notifica o frontend para atualizar o balão específico
       this._emit(sessionId, 'message:media', { msgId, sessionId, convId: jid, mediaType: media.type, mediaUrl })
     } catch (e) {
-      console.error(`[media] download falhou (${msgId}):`, e.message)
+      // Falhas que NUNCA vão funcionar por mais que se tente — não insiste à toa
+      const permanente = /empty media key|not a media message|No message present/i.test(e.message || '')
+
+      if (permanente || attempt >= MAX_ATTEMPTS) {
+        console.error(`[media] desisti de baixar (${msgId}, tentativa ${attempt}${permanente ? ', erro permanente' : ''}):`, e.message)
+        return
+      }
+
+      const delay = [5_000, 15_000, 45_000][attempt - 1] ?? 45_000
+      console.log(`[media] falhou (${msgId}) — nova tentativa em ${delay / 1000}s:`, e.message)
+      setTimeout(() => {
+        // usa o socket ATUAL: o antigo pode ter sido trocado numa reconexão
+        const liveSock = this.sockets.get(sessionId)
+        if (!liveSock) return   // sessão caiu; sem socket não há como baixar
+        this._downloadMediaBg(msg, sessionId, msgId, jid, media, liveSock, attempt + 1)
+          .catch(err => console.error('[media] erro na nova tentativa:', err.message))
+      }, delay).unref()
     } finally {
       this.dlActive--
     }
@@ -1015,6 +1098,7 @@ export class SessionManager {
     this.restartCounts.delete(sessionId)
     this.wdAttempts.delete(sessionId)
     this.wdNextTry.delete(sessionId)
+    this.alertedDown.delete(sessionId)   // sessão removida de propósito: não deixa lixo
     const sock = this.sockets.get(sessionId)
     if (sock) { try { await sock.logout() } catch (_) {} }
     await this._teardownSocket(sessionId)
