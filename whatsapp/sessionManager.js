@@ -368,7 +368,12 @@ export class SessionManager {
       // (perdeu conexão ou foi desvinculado no celular). QR não escaneado /
       // erro de pareamento é sessão que nunca chegou a funcionar — alertar ali
       // só geraria ruído.
-      const quedaReal = payload?.reason === 'max_retries' || payload?.reason === 'logged_out'
+      // Além do motivo, o número precisa TER FUNCIONADO antes: o telefone só é
+      // gravado quando a conexão abre de verdade. Sem isso, um QR que expira
+      // durante o primeiro pareamento (que também reporta 'logged_out') geraria
+      // um alerta falso de "número fora do ar" para um número que nunca existiu.
+      const quedaReal = (payload?.reason === 'max_retries' || payload?.reason === 'logged_out')
+        && !!this.db.prepare('SELECT phone FROM sessions WHERE id=?').get(sessionId)?.phone
 
       if (payload?.status === 'disconnected' && quedaReal) {
         // Uma única vez por queda (o watchdog vai tentar religar várias vezes;
@@ -686,15 +691,25 @@ export class SessionManager {
              Agora limpamos a credencial automaticamente: o próximo "Reconectar"
              gera QR/código novo e o histórico é preservado (conversas ficam no
              banco, não na pasta de credenciais). */
-          const CREDENCIAL_MORTA = [
-            DisconnectReason.loggedOut,           // 401 — desvinculado no celular
-            DisconnectReason.forbidden,           // 403 — vinculação recusada
-            419,                                  // idem (UNAUTHORIZED_CODES do Baileys)
-            DisconnectReason.badSession,          // 500 — credencial corrompida
-            DisconnectReason.multideviceMismatch, // 411 — precisa vincular de novo
-          ]
+          const jaVinculado = !!sock.authState?.creds?.registered
 
-          if (CREDENCIAL_MORTA.includes(code)) {
+          // 401 sempre limpa (comportamento original, não mexer — é o "desvinculei
+          // no celular" e também o QR expirado durante o pareamento).
+          // Os DEMAIS códigos só limpam se a sessão JÁ ESTAVA VINCULADA, ou seja,
+          // um vínculo que funcionava e morreu. Durante o pareamento (ainda não
+          // registrado) as credenciais estão sendo construídas e precisam
+          // sobreviver ao restart 515 — apagá-las ali quebraria o QR/código que
+          // hoje funciona. Aqui elas caem no fluxo normal de retentativa.
+          const credencialMorta =
+            code === DisconnectReason.loggedOut ||
+            (jaVinculado && [
+              DisconnectReason.forbidden,           // 403 — vínculo recusado
+              419,                                  // idem (UNAUTHORIZED_CODES do Baileys)
+              DisconnectReason.badSession,          // 500 — credencial corrompida
+              DisconnectReason.multideviceMismatch, // 411 — precisa vincular de novo
+            ].includes(code))
+
+          if (credencialMorta) {
             this.qrCounts.delete(sessionId)
             this.retries.delete(sessionId)
             this.pairingRequested.delete(sessionId)
