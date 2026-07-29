@@ -1439,8 +1439,11 @@ function openAddModal() {
   sel.innerHTML = gerenciaveis.map(t =>
     `<option value="${t.id}">${esc(t.name)}</option>`
   ).join('')
-  // Esconde o seletor se só tem uma empresa (não faz sentido escolher)
-  wrap.style.display = gerenciaveis.length > 1 ? 'flex' : 'none'
+  // Mostra sempre que houver ao menos UMA empresa gerenciável — mesmo com uma
+  // só, é importante ver PARA QUAL empresa o número está indo (antes sumia
+  // quando havia apenas uma, deixando a pessoa no escuro). Sem nenhuma, some
+  // (e o botão de adicionar nem aparece).
+  wrap.style.display = gerenciaveis.length > 0 ? 'flex' : 'none'
   wrap.style.flexDirection = 'column'
   wrap.style.gap = '4px'
 
