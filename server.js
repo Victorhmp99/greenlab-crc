@@ -127,14 +127,32 @@ async function resolveAuthUser(token) {
   const { data: userData, error: userErr } = await sb.auth.getUser(token)
   if (userErr || !userData?.user) { authCache.delete(token); return null }
 
+  // role vem junto: é POR EMPRESA ('admin' | 'manager' | 'seller'), mesma fonte
+  // de verdade do CRM. Usado para decidir quem pode adicionar/gerenciar números.
   const { data: memberships, error: memErr } = await sb
     .from('user_memberships')
-    .select('tenant_id')
+    .select('tenant_id, role')
     .eq('user_id', userData.user.id)
     .eq('active', true)
   if (memErr) return null
 
-  const authUser = { id: userData.user.id, tenants: (memberships || []).map((m) => m.tenant_id) }
+  // Super admin da plataforma passa por cima do cargo por empresa
+  let isSuperAdmin = false
+  try {
+    const { data: sa } = await sb
+      .from('super_admins').select('user_id').eq('user_id', userData.user.id).maybeSingle()
+    isSuperAdmin = !!sa
+  } catch (_) { /* sem super_admins acessível = trata como usuário comum */ }
+
+  const roles = {}
+  for (const m of memberships || []) roles[m.tenant_id] = m.role
+
+  const authUser = {
+    id: userData.user.id,
+    tenants: (memberships || []).map((m) => m.tenant_id),
+    roles,
+    isSuperAdmin,
+  }
   authCache.set(token, { authUser, expiresAt: Date.now() + AUTH_CACHE_TTL_MS })
   return authUser
 }
@@ -194,6 +212,17 @@ function buildTenantFilter(tenants, params, col = 'tenant_id') {
 
 function getUserId(req) {
   return req.authUser?.id ?? ''
+}
+
+/* Só ADMIN e GESTOR (manager) podem adicionar/gerenciar números de WhatsApp;
+   vendedor (seller) apenas atende as conversas. Super admin da plataforma passa.
+   O cargo é POR EMPRESA — sempre checar contra o tenant em questão. */
+function canManageSessions(req, tenantId) {
+  const u = req.authUser
+  if (!u) return false
+  if (u.isSuperAdmin) return true
+  const role = u.roles?.[tenantId]
+  return role === 'admin' || role === 'manager'
 }
 
 // Verifica se o usuário é dono da sessão
@@ -267,6 +296,12 @@ app.post('/api/sessions', async (req, res) => {
     return res.status(403).json({ error: 'Tenant não autorizado' })
   }
 
+  // Só admin/gestor adiciona número (validado no SERVIDOR — esconder o botão
+  // no frontend é conveniência, não segurança)
+  if (!canManageSessions(req, tenant)) {
+    return res.status(403).json({ error: 'Apenas administradores e gestores podem adicionar números' })
+  }
+
   // Limite de números por empresa (anti-abuso de recursos)
   const MAX_SESSIONS_PER_TENANT = 10
   const count = db.prepare('SELECT COUNT(*) as n FROM sessions WHERE tenant_id = ?').get(tenant).n
@@ -293,6 +328,10 @@ app.post('/api/sessions', async (req, res) => {
 app.post('/api/sessions/import', express.json({ limit: '16mb' }), async (req, res) => {
   const { name, tenant_id, files } = req.body || {}
   const created_by = getUserId(req)
+  // Também cria número — mesma regra de quem pode
+  if (!canManageSessions(req, tenant_id || 'default')) {
+    return res.status(403).json({ error: 'Apenas administradores e gestores podem adicionar números' })
+  }
   if (!name?.trim())                          return res.status(400).json({ error: 'Nome obrigatório' })
   if (!files || typeof files !== 'object')    return res.status(400).json({ error: 'files obrigatório' })
   const entries = Object.entries(files)

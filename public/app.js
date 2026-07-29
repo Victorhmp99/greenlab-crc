@@ -15,6 +15,17 @@ const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_
 let CURRENT_USER      = ''
 let AVAILABLE_TENANTS = []   // [{id, name}] — só as empresas que esse usuário realmente pertence
 const TENANT_NAMES    = {}   // tenant_id -> nome, preenchido após login
+// Cargo POR EMPRESA ('admin' | 'manager' | 'seller') — mesma fonte do CRM.
+// Só admin e gestor (manager) adicionam números; vendedor só atende.
+const TENANT_ROLES    = {}   // tenant_id -> role
+let IS_SUPER_ADMIN    = false
+
+// Pode adicionar número em ALGUMA das empresas do usuário?
+// (o servidor valida de novo por empresa — aqui é só pra mostrar/esconder o botão)
+function canAddNumber() {
+  if (IS_SUPER_ADMIN) return true
+  return Object.values(TENANT_ROLES).some(r => r === 'admin' || r === 'manager')
+}
 
 // Cabeçalho enviado em todas as requisições — mutado (não recriado) após
 // login, pra todo `{ ...TENANT_HEADERS }' espalhado pelo arquivo pegar o token atual
@@ -375,7 +386,7 @@ async function bootFromSession() {
   // Empresas que esse usuário realmente pertence (mesma fonte de verdade do CRM)
   const { data: memberships, error: mErr } = await supabaseClient
     .from('user_memberships')
-    .select('tenant_id')
+    .select('tenant_id, role')
     .eq('user_id', CURRENT_USER)
     .eq('active', true)
 
@@ -384,6 +395,15 @@ async function bootFromSession() {
     showLoginScreen('Sua conta não está vinculada a nenhuma empresa com WhatsApp.')
     return
   }
+
+  // Guarda o cargo de cada empresa (decide quem vê o botão de adicionar número)
+  Object.keys(TENANT_ROLES).forEach(k => delete TENANT_ROLES[k])
+  memberships.forEach((m) => { TENANT_ROLES[m.tenant_id] = m.role })
+  try {
+    const { data: sa } = await supabaseClient
+      .from('super_admins').select('user_id').eq('user_id', CURRENT_USER).maybeSingle()
+    IS_SUPER_ADMIN = !!sa
+  } catch (_) { IS_SUPER_ADMIN = false }
 
   const tenantIds = memberships.map((m) => m.tenant_id)
   const { data: tenants } = await supabaseClient
@@ -505,16 +525,15 @@ function badgeHtml(count) {
 function renderSessions() {
   const list = document.getElementById('sessions-list')
 
-  /* Botão "+" (adicionar número) fica SEMPRE visível para quem está logado.
-     Antes ele só aparecia se o usuário fosse "dono" de alguma sessão existente.
-     Isso o fez sumir de vez: as sessões antigas guardam o identificador de dono
-     do login anterior (o CRC passou a usar a conta do CRM/Supabase), então o
-     usuário atual não é reconhecido como dono de nenhuma e o botão nunca mais
-     aparecia. Esconder aqui nunca foi barreira de segurança — quem pode criar
-     é validado no servidor (token válido + empresa do usuário + limite por
-     empresa em POST /api/sessions). */
+  /* Botão "+" (adicionar número): só ADMIN e GESTOR, pelo cargo real do CRM.
+     Antes a regra era "ser dono de alguma sessão existente", o que fez o botão
+     sumir de vez: as sessões antigas guardam o identificador de dono do login
+     anterior (o CRC passou a autenticar com a conta do CRM/Supabase), então o
+     usuário deixou de ser reconhecido como dono de qualquer uma.
+     O servidor valida a mesma regra em POST /api/sessions — esconder aqui é
+     conveniência, não segurança. */
   const addBtn = document.getElementById('btn-add-session')
-  if (addBtn) addBtn.style.display = 'flex'
+  if (addBtn) addBtn.style.display = canAddNumber() ? 'flex' : 'none'
 
   // Badge da "Todas" (caixa unificada)
   const allBadge = document.getElementById('filter-all-badge')
