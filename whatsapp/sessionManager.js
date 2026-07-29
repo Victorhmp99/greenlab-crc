@@ -675,18 +675,33 @@ export class SessionManager {
           const code            = lastDisconnect?.error?.output?.statusCode
           const errMsg          = lastDisconnect?.error?.message
           console.log(`[close] [${name}] code=${code} msg=${errMsg}`)
-          const loggedOut       = code === DisconnectReason.loggedOut
           const restartRequired = code === DisconnectReason.restartRequired
           this.sockets.delete(sessionId)
 
-          if (loggedOut) {
-            // Deslogado no celular → limpa credenciais, não tenta reconectar
+          /* CREDENCIAL MORTA — o WhatsApp diz que essa vinculação não vale mais.
+             Antes só o 401 era tratado. Nos outros códigos a credencial inválida
+             ficava salva: o Baileys então tentava LOGAR (em vez de mostrar QR),
+             falhava sempre, e o botão "Reconectar" nunca funcionava — só apagando
+             a sessão e criando de novo, o que fazia PERDER TODAS AS CONVERSAS.
+             Agora limpamos a credencial automaticamente: o próximo "Reconectar"
+             gera QR/código novo e o histórico é preservado (conversas ficam no
+             banco, não na pasta de credenciais). */
+          const CREDENCIAL_MORTA = [
+            DisconnectReason.loggedOut,           // 401 — desvinculado no celular
+            DisconnectReason.forbidden,           // 403 — vinculação recusada
+            419,                                  // idem (UNAUTHORIZED_CODES do Baileys)
+            DisconnectReason.badSession,          // 500 — credencial corrompida
+            DisconnectReason.multideviceMismatch, // 411 — precisa vincular de novo
+          ]
+
+          if (CREDENCIAL_MORTA.includes(code)) {
             this.qrCounts.delete(sessionId)
             this.retries.delete(sessionId)
             this.pairingRequested.delete(sessionId)
             this.restartCounts.delete(sessionId)
             try { fs.rmSync(path.join(SESSIONS_DIR, sessionId), { recursive: true, force: true }) } catch (_) {}
             this.db.prepare("UPDATE sessions SET status='disconnected' WHERE id=?").run(sessionId)
+            console.log(`🔑 [${name}] credencial invalidada (code=${code}) — limpa; histórico preservado, basta reconectar`)
             this._emit(sessionId, 'session:update', { sessionId, status: 'disconnected', reason: 'logged_out' })
             return
           }
@@ -1177,7 +1192,23 @@ export class SessionManager {
   }
 
   /* ── Reconectar uma sessão existente (após timeout de QR) ── */
-  async reconnect(sessionId, name) {
+  /* Apaga SÓ a credencial (a vinculação com o WhatsApp), preservando conversas
+     e mensagens — elas vivem no banco, não na pasta de credenciais. Usado para
+     forçar QR/código novo quando a vinculação trava de um jeito que o servidor
+     não reporta. Antes, a única saída era apagar a sessão e perder o histórico. */
+  async clearCredentials(sessionId, name = '') {
+    await this._teardownSocket(sessionId)   // encerra socket antes de apagar a credencial
+    this.qrCounts.delete(sessionId)
+    this.retries.delete(sessionId)
+    this.pairingRequested.delete(sessionId)
+    this.restartCounts.delete(sessionId)
+    try { fs.rmSync(path.join(SESSIONS_DIR, sessionId), { recursive: true, force: true }) } catch (_) {}
+    console.log(`🔑 [${name || sessionId}] vinculação zerada a pedido — histórico preservado`)
+  }
+
+  /* forceRelink: zera a vinculação antes de reconectar (gera QR novo), mantendo
+     todas as conversas. */
+  async reconnect(sessionId, name, forceRelink = false) {
     this.qrCounts.delete(sessionId)
     this.retries.delete(sessionId)
     this.pairingRequested.delete(sessionId)
@@ -1185,6 +1216,9 @@ export class SessionManager {
     // Reconexão manual = intenção explícita: zera o espaçamento do watchdog
     this.wdAttempts.delete(sessionId)
     this.wdNextTry.delete(sessionId)
+
+    if (forceRelink) await this.clearCredentials(sessionId, name)
+
     this.db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(sessionId)
     this._emit(sessionId, 'session:update', { sessionId, status: 'connecting' })
     await this.connect(sessionId, name)

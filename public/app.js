@@ -539,6 +539,9 @@ function renderSessions() {
           ${s.status === 'disconnected' ? `
           <button class="btn-muted" title="Reconectar (novo QR)" onclick="event.stopPropagation();reconnectSession('${s.id}','${esc(s.name)}')">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          </button>
+          <button class="btn-muted" title="Não reconecta? Vincular do zero (mantém as conversas)" onclick="event.stopPropagation();relinkSession('${s.id}','${esc(s.name)}')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M18.36 6.64A9 9 0 1 1 5.64 5.64"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
           </button>` : ''}
           <button class="btn-muted" title="Limpar conversas" onclick="event.stopPropagation();clearConversations('${s.id}')">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
@@ -619,11 +622,13 @@ async function addSession() {
   }
 }
 
-async function reconnectSession(id, name) {
+async function reconnectSession(id, name, forceRelink = false) {
   // Pergunta o método de reconexão — permite reconectar à distância via código
   const method = await showDialog({
-    title: `Reconectar ${name}`,
-    message: 'Como deseja reconectar este número?',
+    title: forceRelink ? `Vincular ${name} do zero` : `Reconectar ${name}`,
+    message: forceRelink
+      ? 'A vinculação atual será zerada e você fará uma nova.\nAs conversas e mensagens são preservadas.'
+      : 'Como deseja reconectar este número?',
     buttons: [
       { label: '📷 QR Code', value: 'qr', style: 'muted' },
       { label: '🔢 Código (à distância)', value: 'code', style: 'primary' },
@@ -655,10 +660,24 @@ async function reconnectSession(id, name) {
     const res = await fetch(`/api/sessions/${id}/reconnect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
-      body: JSON.stringify({ phone_number }),
+      body: JSON.stringify({ phone_number, force_relink: forceRelink }),
     })
     if (!res.ok) { const e = await res.json().catch(() => ({})); showToast('Erro: ' + (e.error || res.status), 'error') }
   } catch (e) { showToast('Erro de conexão: ' + e.message, 'error') }
+}
+
+/* Saída para quando o "Reconectar" normal não resolve: zera a vinculação e
+   começa uma nova. NÃO apaga conversas — antes, a única alternativa nesse
+   caso era excluir o número e perder todo o histórico. */
+async function relinkSession(id, name) {
+  const ok = await showConfirm(
+    'Vincular do zero',
+    `O número "${name}" será desvinculado e você fará uma nova leitura de QR/código.\n\n` +
+    'As conversas e mensagens NÃO são apagadas.',
+    'Vincular do zero',
+  )
+  if (!ok) return
+  await reconnectSession(id, name, true)
 }
 
 async function removeSession(id) {

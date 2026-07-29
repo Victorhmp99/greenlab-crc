@@ -327,16 +327,19 @@ app.post('/api/sessions/:id/reconnect', async (req, res) => {
   const s = db.prepare('SELECT name FROM sessions WHERE id = ?').get(req.params.id)
   if (!s) return res.status(404).json({ error: 'Sessão não encontrada' })
 
-  const { phone_number } = req.body || {}
+  const { phone_number, force_relink } = req.body || {}
   const norm = await normalizePairingPhone(phone_number)
   if (norm.error) return res.status(400).json({ error: norm.error })
   const pairingPhone = norm.phone
 
   if (pairingPhone) {
+    // Zera a vinculação antes (mantendo conversas) quando pedido: credencial
+    // antiga presa impediria o código novo de ser gerado.
+    if (force_relink) await sm.clearCredentials(req.params.id, s.name).catch(console.error)
     db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(req.params.id)
     sm.connect(req.params.id, s.name, pairingPhone).catch(console.error)
   } else {
-    sm.reconnect(req.params.id, s.name).catch(console.error)
+    sm.reconnect(req.params.id, s.name, !!force_relink).catch(console.error)
   }
   res.json({ ok: true })
 })
