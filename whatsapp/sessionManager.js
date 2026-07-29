@@ -235,9 +235,36 @@ function getExt(mime = '') {
   return base || 'bin'
 }
 
-function extractBody(msg) {
-  const m = msg.message
+/* Desembrulha invólucros: o WhatsApp aninha a mensagem real dentro de um
+   "envelope" em vários casos comuns — mensagens temporárias (o conteúdo some
+   depois), ver-uma-vez, documento com legenda, mensagem editada. Sem abrir o
+   envelope, o conteúdo fica invisível e a mensagem era DESCARTADA: numa conversa
+   com "mensagens temporárias" ligada, TODAS as mensagens sumiam do CRC. */
+function unwrapMessage(m, depth = 0) {
+  if (!m || depth > 4) return m
+  const inner = m.ephemeralMessage?.message
+             || m.viewOnceMessage?.message
+             || m.viewOnceMessageV2?.message
+             || m.viewOnceMessageV2Extension?.message
+             || m.documentWithCaptionMessage?.message
+             || m.editedMessage?.message
+  return inner ? unwrapMessage(inner, depth + 1) : m
+}
+
+/* Só estes são de controle interno (não são conteúdo que o atendente precise
+   ver). Todo o RESTO tem que aparecer — perder mensagem aqui é perder lead. */
+function isControlMessage(m) {
+  if (m.reactionMessage || m.protocolMessage || m.senderKeyDistributionMessage) return true
+  // envelope que só carrega metadados, sem conteúdo real
+  const keys = Object.keys(m).filter(k => k !== 'messageContextInfo')
+  return keys.length === 0
+}
+
+export function extractBody(msg) {
+  const m = unwrapMessage(msg.message)
   if (!m) return null
+  if (isControlMessage(m))        return null
+
   if (m.conversation)             return m.conversation
   if (m.extendedTextMessage?.text)return m.extendedTextMessage.text
   if (m.imageMessage)             return m.imageMessage.caption || '[Imagem]'
@@ -246,13 +273,30 @@ function extractBody(msg) {
   if (m.stickerMessage)           return '[Figurinha]'
   if (m.documentMessage)          return m.documentMessage.fileName || '[Documento]'
   if (m.locationMessage)          return '[Localização]'
+  if (m.liveLocationMessage)      return '[Localização em tempo real]'
   if (m.contactMessage)           return `[Contato: ${m.contactMessage.displayName}]`
-  if (m.reactionMessage)          return null
-  return null
+  if (m.contactsArrayMessage)     return '[Contatos]'
+
+  // Respostas de botão/lista — é assim que chega o lead que clicou no anúncio
+  // (clique-para-WhatsApp da Meta). Antes sumiam por completo.
+  if (m.templateButtonReplyMessage) return m.templateButtonReplyMessage.selectedDisplayText || '[Resposta]'
+  if (m.buttonsResponseMessage)     return m.buttonsResponseMessage.selectedDisplayText
+                                        || m.buttonsResponseMessage.selectedButtonId || '[Resposta]'
+  if (m.listResponseMessage)        return m.listResponseMessage.title
+                                        || m.listResponseMessage.singleSelectReply?.selectedRowId || '[Resposta]'
+  if (m.interactiveResponseMessage) return m.interactiveResponseMessage.body?.text || '[Resposta]'
+  if (m.pollCreationMessage || m.pollCreationMessageV2 || m.pollCreationMessageV3) return '[Enquete]'
+  if (m.pollUpdateMessage)          return '[Resposta de enquete]'
+
+  // REGRA DE OURO: nunca descartar em silêncio. Um tipo novo/desconhecido do
+  // WhatsApp aparece como "[Mensagem]" — o atendente vê que chegou algo e
+  // responde. Melhor um rótulo genérico do que um lead perdido.
+  console.log('[msg] tipo não mapeado (exibido como genérico):', Object.keys(m).join(','))
+  return '[Mensagem]'
 }
 
 function detectMediaType(msg) {
-  const m = msg.message
+  const m = unwrapMessage(msg.message)   // mídia dentro de envelope também conta
   if (!m) return null
   if (m.imageMessage)    return { type: 'image',    mime: m.imageMessage.mimetype }
   if (m.videoMessage)    return { type: 'video',    mime: m.videoMessage.mimetype }

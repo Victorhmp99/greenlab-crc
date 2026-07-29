@@ -193,6 +193,9 @@ socket.on('message:new', ({ conversation, message }) => {
    de ban. */
 
 const VAPID_PUBLIC_KEY = document.querySelector('meta[name="vapid-public-key"]')?.content || ''
+// true quando o push está de fato registrado no servidor. Enquanto for false,
+// o aviso da própria página entra como reserva (ver notifyIncomingMessage).
+let pushActive = false
 
 function requestNotificationPermission() {
   if (!('Notification' in window)) return
@@ -228,12 +231,17 @@ async function subscribeToPush() {
         applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
       })
     }
-    await fetch('/api/push/subscribe', {
+    const res = await fetch('/api/push/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
       body: JSON.stringify({ subscription: sub }),
     })
+    // Só marca como ativo se o servidor CONFIRMOU o registro — daí em diante
+    // quem avisa é o push (service worker), e o aviso da página se cala pra
+    // não duplicar. Se qualquer etapa falhar, segue false e a página avisa.
+    pushActive = res.ok
   } catch (e) {
+    pushActive = false
     console.warn('[push] não foi possível assinar:', e.message)
   }
 }
@@ -241,6 +249,7 @@ async function subscribeToPush() {
 // Remove o registro de push deste aparelho (ao deslogar) — para de receber
 // notificações da conta antiga neste dispositivo.
 async function unsubscribeFromPush() {
+  pushActive = false   // sem push registrado, o aviso da página volta a valer
   try {
     if (!('serviceWorker' in navigator)) return
     const reg = await navigator.serviceWorker.ready
@@ -255,10 +264,15 @@ async function unsubscribeFromPush() {
   } catch (_) {}
 }
 
-// Aviso ao vivo (aba aberta) — complementa o push. Se a aba está visível e
-// o push também dispararia, evitamos duplicar: só mostra ao vivo quando a
-// página está de fato em foco (o SO não teria acordado o SW aqui de qualquer forma).
+/* Aviso da PÁGINA — hoje serve só de RESERVA.
+   Antes chegavam 2 notificações pela mesma mensagem: o service worker recebe o
+   push MESMO com a aba aberta (a suposição antiga de que o SO não o acordaria
+   nesse caso estava errada), então página e push avisavam ao mesmo tempo.
+   Agora, com push ativo, quem avisa é só o push. Se o push não estiver ativo
+   (permissão negada, assinatura falhou, navegador sem suporte), esta função
+   volta a agir — assim nunca ficamos sem aviso nenhum. */
 function notifyIncomingMessage(conversation, message) {
+  if (pushActive) return                                // push ativo = ele avisa, não duplicamos
   if (!('Notification' in window) || Notification.permission !== 'granted') return
   if (document.visibilityState !== 'visible') return   // fechado/2º plano → o push cuida
 
