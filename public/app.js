@@ -20,11 +20,17 @@ const TENANT_NAMES    = {}   // tenant_id -> nome, preenchido após login
 const TENANT_ROLES    = {}   // tenant_id -> role
 let IS_SUPER_ADMIN    = false
 
+// Pode adicionar número NESTA empresa? (cargo é por empresa)
+function canManageTenant(tenantId) {
+  if (IS_SUPER_ADMIN) return true
+  const r = TENANT_ROLES[tenantId]
+  return r === 'admin' || r === 'manager'
+}
+
 // Pode adicionar número em ALGUMA das empresas do usuário?
 // (o servidor valida de novo por empresa — aqui é só pra mostrar/esconder o botão)
 function canAddNumber() {
-  if (IS_SUPER_ADMIN) return true
-  return Object.values(TENANT_ROLES).some(r => r === 'admin' || r === 'manager')
+  return AVAILABLE_TENANTS.some(t => canManageTenant(t.id))
 }
 
 // Cabeçalho enviado em todas as requisições — mutado (não recriado) após
@@ -611,7 +617,13 @@ async function addSession() {
   const phoneEl   = document.getElementById('input-session-phone')
   const name      = input.value.trim()
   if (!name) return
-  const tenant_id = tenantEl?.value || AVAILABLE_TENANTS[0]?.id || 'default'
+  // Reserva também respeita o cargo: nunca cair numa empresa que a pessoa não
+  // gerencia (o servidor recusaria, mas o erro sairia confuso)
+  const tenant_id = tenantEl?.value || AVAILABLE_TENANTS.find(t => canManageTenant(t.id))?.id
+  if (!tenant_id) {
+    showToast('Você não é administrador nem gestor de nenhuma empresa', 'error')
+    return
+  }
   const method    = state.connectMethod
 
   let phone_number = null
@@ -1418,14 +1430,17 @@ async function refreshAllConversations() {
 /* ── Modais ───────────────────────────────────────────────── */
 
 function openAddModal() {
-  // Popula o seletor de empresa
+  // Só lista as empresas onde a pessoa é admin/gestor. Antes vinham TODAS as
+  // empresas dela: quem é gestor de uma e vendedor de outra via as duas e só
+  // descobria a restrição ao tentar (o servidor recusa) — armadilha à toa.
+  const gerenciaveis = AVAILABLE_TENANTS.filter(t => canManageTenant(t.id))
   const sel  = document.getElementById('input-session-tenant')
   const wrap = document.getElementById('tenant-selector-wrap')
-  sel.innerHTML = AVAILABLE_TENANTS.map(t =>
-    `<option value="${t.id}">${t.name}</option>`
+  sel.innerHTML = gerenciaveis.map(t =>
+    `<option value="${t.id}">${esc(t.name)}</option>`
   ).join('')
-  // Esconde o seletor se só tem um tenant (não faz sentido escolher)
-  wrap.style.display = AVAILABLE_TENANTS.length > 1 ? 'flex' : 'none'
+  // Esconde o seletor se só tem uma empresa (não faz sentido escolher)
+  wrap.style.display = gerenciaveis.length > 1 ? 'flex' : 'none'
   wrap.style.flexDirection = 'column'
   wrap.style.gap = '4px'
 
