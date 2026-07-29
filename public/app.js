@@ -505,10 +505,16 @@ function badgeHtml(count) {
 function renderSessions() {
   const list = document.getElementById('sessions-list')
 
-  // Botão "+" só aparece se o usuário já criou alguma sessão OU se não há sessões ainda
-  const userOwnsAny = state.sessions.some(s => isOwner(s))
-  const addBtn      = document.getElementById('btn-add-session')
-  if (addBtn) addBtn.style.display = (userOwnsAny || !state.sessions.length) ? 'flex' : 'none'
+  /* Botão "+" (adicionar número) fica SEMPRE visível para quem está logado.
+     Antes ele só aparecia se o usuário fosse "dono" de alguma sessão existente.
+     Isso o fez sumir de vez: as sessões antigas guardam o identificador de dono
+     do login anterior (o CRC passou a usar a conta do CRM/Supabase), então o
+     usuário atual não é reconhecido como dono de nenhuma e o botão nunca mais
+     aparecia. Esconder aqui nunca foi barreira de segurança — quem pode criar
+     é validado no servidor (token válido + empresa do usuário + limite por
+     empresa em POST /api/sessions). */
+  const addBtn = document.getElementById('btn-add-session')
+  if (addBtn) addBtn.style.display = 'flex'
 
   // Badge da "Todas" (caixa unificada)
   const allBadge = document.getElementById('filter-all-badge')
