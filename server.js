@@ -225,13 +225,18 @@ function canManageSessions(req, tenantId) {
   return role === 'admin' || role === 'manager'
 }
 
-// Verifica se o usuário é dono da sessão
-function assertOwner(sessionId, userId, res) {
-  if (!userId) { res.status(401).json({ error: 'user_id obrigatório' }); return false }
-  const s = db.prepare('SELECT created_by FROM sessions WHERE id = ?').get(sessionId)
+/* Quem pode GERENCIAR uma sessão específica (reconectar/limpar/desconectar):
+   admin ou gestor da empresa dona do número. Antes era "quem criou o número"
+   — o que impedia outro gestor da mesma empresa de intervir quando a sessão
+   caía e o criador não estava disponível. E, no caso de sessões antigas cujo
+   criador migrou de login, ninguém mais conseguia gerenciar. */
+function assertCanManage(req, sessionId, res) {
+  if (!req.authUser?.id) { res.status(401).json({ error: 'Não autenticado' }); return false }
+  const s = db.prepare('SELECT tenant_id FROM sessions WHERE id = ?').get(sessionId)
   if (!s) { res.status(404).json({ error: 'Sessão não encontrada' }); return false }
-  if (s.created_by && s.created_by !== userId) {
-    res.status(403).json({ error: 'Sem permissão para esta sessão' }); return false
+  if (!canManageSessions(req, s.tenant_id)) {
+    res.status(403).json({ error: 'Apenas administradores e gestores desta empresa podem gerenciar o número' })
+    return false
   }
   return true
 }
@@ -361,8 +366,7 @@ app.post('/api/sessions/import', express.json({ limit: '16mb' }), async (req, re
 
 // Reconecta uma sessão existente (após QR/código expirar ou cair)
 app.post('/api/sessions/:id/reconnect', async (req, res) => {
-  const userId = getUserId(req)
-  if (!assertOwner(req.params.id, userId, res)) return
+  if (!assertCanManage(req, req.params.id, res)) return
   const s = db.prepare('SELECT name FROM sessions WHERE id = ?').get(req.params.id)
   if (!s) return res.status(404).json({ error: 'Sessão não encontrada' })
 
@@ -384,16 +388,14 @@ app.post('/api/sessions/:id/reconnect', async (req, res) => {
 })
 
 app.delete('/api/sessions/:id', async (req, res) => {
-  const userId = getUserId(req)
-  if (!assertOwner(req.params.id, userId, res)) return
+  if (!assertCanManage(req, req.params.id, res)) return
   await sm.disconnect(req.params.id)
   db.prepare('DELETE FROM sessions WHERE id = ?').run(req.params.id)
   res.json({ ok: true })
 })
 
 app.delete('/api/sessions/:id/conversations', (req, res) => {
-  const userId = getUserId(req)
-  if (!assertOwner(req.params.id, userId, res)) return
+  if (!assertCanManage(req, req.params.id, res)) return
   db.prepare('DELETE FROM messages WHERE session_id = ?').run(req.params.id)
   db.prepare('DELETE FROM conversations WHERE session_id = ?').run(req.params.id)
   res.json({ ok: true })

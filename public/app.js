@@ -565,7 +565,7 @@ function renderSessions() {
       <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
         ${badgeHtml(unreadCountFor(s.id))}
         <span class="status-dot ${s.status}"></span>
-        ${isOwner(s) ? `
+        ${canManageTenant(s.tenant_id) ? `
         <div class="session-actions">
           ${s.status === 'disconnected' ? `
           <button class="btn-muted" title="Reconectar (novo QR)" onclick="event.stopPropagation();reconnectSession('${s.id}','${esc(s.name)}')">
