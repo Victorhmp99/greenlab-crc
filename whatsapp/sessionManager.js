@@ -854,12 +854,28 @@ export class SessionManager {
       }
     })
 
-    sock.ev.on('contacts.upsert', contacts => {
-      for (const c of contacts) {
-        if (c.name && c.id)
-          this.db.prepare('UPDATE conversations SET name=? WHERE id=? AND name=phone').run(c.name, c.id)
-      }
-    })
+    /* Nome do contato — o Baileys sincroniza a lista via 'contacts.upsert' e
+       'contacts.update'. Preferimos NESTA ordem:
+         1. notify       — nome que a PESSOA configurou no WhatsApp dela (o
+                           mesmo que aparece pra quem ela conversa)
+         2. verifiedName — nome verificado (contas Business)
+         3. name         — nome que ESTA conta tem salvo na agenda
+       Atualiza sempre que o nome atual for vazio, igual ao telefone, OU
+       diferente do notify recebido (o notify manda: se a pessoa trocou o
+       nome no perfil, refletimos aqui). */
+    const applyContact = (c) => {
+      if (!c?.id) return
+      const melhor = c.notify || c.verifiedName || c.name
+      if (!melhor) return
+      this.db.prepare(`
+        UPDATE conversations
+        SET name = ?
+        WHERE id = ?
+          AND (name IS NULL OR name = '' OR name = phone OR name != ?)
+      `).run(melhor, c.id, melhor)
+    }
+    sock.ev.on('contacts.upsert', contacts => contacts.forEach(applyContact))
+    sock.ev.on('contacts.update', contacts => contacts.forEach(applyContact))
 
     // ── Status das mensagens enviadas (enviado/entregue/lido) ──
     sock.ev.on('messages.update', updates => {
