@@ -718,13 +718,53 @@ async function relinkSession(id, name) {
 }
 
 async function removeSession(id) {
-  if (!(await showConfirm('Desconectar número', 'A sessão será encerrada e removida do CRC.\nVocê pode conectar de novo quando quiser.', 'Desconectar', true))) return
+  const s = state.sessions.find(x => x.id === id)
+  const nome = s?.name || 'este número'
+  // Conta o histórico que SERÁ APAGADO — sem esse número o usuário não entende
+  // o tamanho do estrago. A perda real de uma cliente com 200 conversas antigas
+  // ensinou que só "Tem certeza?" é fraco demais.
+  const convs = state.conversations.filter(c => c.session_id === id).length
+
+  const primeiro = await showDialog({
+    title: `⚠️ Apagar "${nome}" APAGA todo o histórico`,
+    message:
+      `Ao continuar, este número será removido do CRC e junto vão:\n` +
+      `  • ${convs} conversa(s)\n` +
+      `  • TODAS as mensagens dessas conversas\n` +
+      `Isso NÃO PODE ser desfeito.\n\n` +
+      `Se sua intenção era só reconectar (o número caiu), use:\n` +
+      `  • Reconectar (seta circular) — mantém tudo\n` +
+      `  • Vincular do zero — se o Reconectar não resolve, mantém tudo`,
+    buttons: [
+      { label: 'Cancelar', value: null, style: 'muted' },
+      { label: 'Entendo, quero continuar', value: 'ok', style: 'danger' },
+    ],
+  })
+  if (primeiro !== 'ok') return
+
+  // Segunda barreira: obrigar digitar a palavra APAGAR — não dá pra clicar
+  // errado sem querer, e força o usuário a ler o que vai fazer.
+  const digitado = await showDialog({
+    title: 'Confirmação final',
+    message: `Para apagar "${nome}" e todo o histórico, digite: APAGAR`,
+    input: { placeholder: 'APAGAR' },
+    buttons: [
+      { label: 'Cancelar', value: null, style: 'muted' },
+      { label: 'APAGAR AGORA', style: 'danger' },
+    ],
+  })
+  if (String(digitado || '').trim().toUpperCase() !== 'APAGAR') {
+    if (digitado !== null) showToast('Não apagou — a palavra digitada não bate', 'info')
+    return
+  }
+
   await fetch(`/api/sessions/${id}`, { method: 'DELETE', headers: TENANT_HEADERS })
   state.sessions      = state.sessions.filter(s => s.id !== id)
   state.conversations = state.conversations.filter(c => c.session_id !== id)
   if (state.activeSession?.id === id) selectSession(null)
   renderSessions()
   renderConversations()
+  showToast(`"${nome}" apagado`, 'info')
 }
 
 async function clearConversations(sessionId) {

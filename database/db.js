@@ -75,6 +75,10 @@ export function initDB() {
     `ALTER TABLE sessions ADD COLUMN tenant_id TEXT DEFAULT 'default'`,
     `ALTER TABLE sessions ADD COLUMN created_by TEXT DEFAULT ''`,
     `ALTER TABLE messages ADD COLUMN edited INTEGER DEFAULT 0`,
+    // Soft delete: "Desconectar" agora só marca como deletada. Assim conversas
+    // e mensagens ficam preservadas no banco — se o mesmo número for reconectado
+    // depois, o histórico é migrado automaticamente pra nova sessão.
+    `ALTER TABLE sessions ADD COLUMN deleted_at TEXT`,
   ]) {
     try { db.exec(col) } catch (_) { /* coluna já existe */ }
   }

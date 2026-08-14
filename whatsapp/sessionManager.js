@@ -391,6 +391,48 @@ export class SessionManager {
     }
   }
 
+  /* Migra conversas/mensagens/mídia de qualquer sessão APAGADA do mesmo
+     tenant com o MESMO telefone pra sessão atual. Só roda no evento 'open',
+     quando o phone já foi confirmado pelo WhatsApp (garante que estamos
+     falando do mesmo número). Idempotente: rodar duas vezes não duplica
+     nem sobrescreve conversas que já existem na sessão nova (INSERT OR IGNORE). */
+  _migrateFromDeletedSessions(newSessionId, phone) {
+    const current = this.db.prepare('SELECT tenant_id FROM sessions WHERE id=?').get(newSessionId)
+    if (!current || !phone) return
+
+    const antigas = this.db.prepare(`
+      SELECT id FROM sessions
+      WHERE tenant_id = ? AND phone = ? AND deleted_at IS NOT NULL AND id != ?
+    `).all(current.tenant_id, phone, newSessionId)
+    if (!antigas.length) return
+
+    let totalConv = 0, totalMsg = 0
+    // Uma transação por sessão antiga — atômico e rápido
+    for (const s of antigas) {
+      // INSERT OR IGNORE: se a conversa já existir na nova sessão (o número
+      // voltou a escrever antes da migração), preserva a atual e ignora a antiga
+      totalConv += this.db.prepare(`
+        INSERT OR IGNORE INTO conversations (id, session_id, name, phone, last_message, last_message_at, unread_count, profile_pic)
+        SELECT id, ?, name, phone, last_message, last_message_at, unread_count, profile_pic
+        FROM conversations WHERE session_id = ?
+      `).run(newSessionId, s.id).changes
+
+      totalMsg += this.db.prepare(`
+        INSERT OR IGNORE INTO messages (id, conversation_id, session_id, from_me, body, media_type, media_url, timestamp, status, edited)
+        SELECT id, conversation_id, ?, from_me, body, media_type, media_url, timestamp, status, edited
+        FROM messages WHERE session_id = ?
+      `).run(newSessionId, s.id).changes
+
+      // Depois de MIGRAR os dados, é seguro apagar os órfãos (CASCADE remove
+      // conversations e messages junto). Isso evita duplicidade na próxima
+      // vez que uma sessão nova for aberta com o mesmo telefone.
+      this.db.prepare('DELETE FROM sessions WHERE id = ?').run(s.id)
+    }
+    if (totalConv || totalMsg) {
+      console.log(`🔁 [${newSessionId}] histórico recuperado: ${totalConv} conversas, ${totalMsg} mensagens (de ${antigas.length} sessão(ões) antiga(s) do ${phone})`)
+    }
+  }
+
   /* Nome amigável do número, pro texto do alerta */
   _sessionName(sessionId) {
     try {
@@ -486,7 +528,7 @@ export class SessionManager {
      Só reconecta sessões REGISTRADAS (já escanearam QR antes).
      Sessões que nunca completaram ficam offline — evita loop de QR no boot. */
   async restoreAll() {
-    for (const s of this.db.prepare('SELECT * FROM sessions').all()) {
+    for (const s of this.db.prepare('SELECT * FROM sessions WHERE deleted_at IS NULL').all()) {
       const credsPath = path.join(SESSIONS_DIR, s.id, 'creds.json')
       let registered = false
       try {
@@ -531,7 +573,7 @@ export class SessionManager {
         // (sem socket vivo e sem conexão em curso) distingue a que travou da
         // que está genuinamente conectando agora.
         const offline = this.db.prepare(
-          "SELECT * FROM sessions WHERE status IN ('disconnected','connecting')"
+          "SELECT * FROM sessions WHERE status IN ('disconnected','connecting') AND deleted_at IS NULL"
         ).all()
         const now = Date.now()
 
@@ -671,6 +713,10 @@ export class SessionManager {
           this.db.prepare('UPDATE sessions SET status=?,phone=? WHERE id=?').run('connected', phone, sessionId)
           this._emit(sessionId, 'session:update', { sessionId, status: 'connected', phone })
           console.log(`✅ [${name}] Conectado: ${phone}`)
+          // Migração automática: se o mesmo número foi vinculado antes noutra
+          // sessão do mesmo tenant (agora soft-deleted), traz as conversas e
+          // mensagens antigas pra cá — o usuário reconecta e o histórico volta.
+          try { this._migrateFromDeletedSessions(sessionId, phone) } catch (e) { console.error('[migrate]', e.message) }
           // Cura conversas antigas que guardaram o LID no lugar do telefone real
           // (só leitura do mapa LOCAL do Baileys — sem rede, zero risco de ban).
           setTimeout(() => this._backfillLidPhones(sessionId, sock).catch(() => {}), 4000).unref?.()

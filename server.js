@@ -265,7 +265,9 @@ app.get('/api/sessions', (req, res) => {
   const tenants = getTenants(req)
   const params  = []
   const filter  = buildTenantFilter(tenants, params, 'tenant_id')
-  res.json(db.prepare(`SELECT * FROM sessions WHERE 1=1${filter} ORDER BY tenant_id, created_at`).all(...params))
+  // deleted_at IS NULL: sessão apagada não aparece mais, MAS suas conversas
+  // continuam gravadas no banco (recuperáveis se o mesmo número reconectar)
+  res.json(db.prepare(`SELECT * FROM sessions WHERE deleted_at IS NULL${filter} ORDER BY tenant_id, created_at`).all(...params))
 })
 
 /* Normaliza número p/ pareamento: valida dígitos e consulta o WhatsApp pelo
@@ -390,7 +392,13 @@ app.post('/api/sessions/:id/reconnect', async (req, res) => {
 app.delete('/api/sessions/:id', async (req, res) => {
   if (!assertCanManage(req, req.params.id, res)) return
   await sm.disconnect(req.params.id)
-  db.prepare('DELETE FROM sessions WHERE id = ?').run(req.params.id)
+  // SOFT DELETE: o registro fica no banco pra preservar as conversas.
+  // Se o mesmo número for reconectado depois, o histórico volta automaticamente
+  // (sm.connect no evento 'open' cuida da migração). ANTES era DELETE FROM,
+  // que via CASCADE apagava conversas e mensagens — perda REAL de leads (bug
+  // resolvido depois do incidente da Argui).
+  db.prepare("UPDATE sessions SET deleted_at = datetime('now'), status = 'disconnected' WHERE id = ?")
+    .run(req.params.id)
   res.json({ ok: true })
 })
 
