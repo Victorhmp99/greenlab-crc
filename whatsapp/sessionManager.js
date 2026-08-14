@@ -528,6 +528,27 @@ export class SessionManager {
      Só reconecta sessões REGISTRADAS (já escanearam QR antes).
      Sessões que nunca completaram ficam offline — evita loop de QR no boot. */
   async restoreAll() {
+    // Cura retroativa do bug do "nome do próprio dono como contato":
+    // se o MESMO nome aparece em muitas (>=5) conversas de uma mesma sessão,
+    // é o nome do dono do WhatsApp — não de contatos reais. Limpamos pra que
+    // no próximo pushName legítimo (quando o contato responder) o nome certo
+    // seja preenchido. Só nomes com > 3 caracteres (evita afetar "Oi", "Ok").
+    try {
+      const suspeitos = this.db.prepare(`
+        SELECT session_id, name, COUNT(*) as n
+        FROM conversations
+        WHERE name IS NOT NULL AND name != '' AND length(name) > 3
+        GROUP BY session_id, name
+        HAVING COUNT(*) >= 5
+      `).all()
+      for (const s of suspeitos) {
+        const upd = this.db.prepare(
+          "UPDATE conversations SET name = NULL WHERE session_id = ? AND name = ?"
+        ).run(s.session_id, s.name)
+        console.log(`🧽 [cura-nome] "${s.name}" removido de ${upd.changes} conversa(s) da sessão ${s.session_id}`)
+      }
+    } catch (e) { console.error('[cura-nome] erro:', e.message) }
+
     for (const s of this.db.prepare('SELECT * FROM sessions WHERE deleted_at IS NULL').all()) {
       const credsPath = path.join(SESSIONS_DIR, s.id, 'creds.json')
       let registered = false
@@ -880,7 +901,12 @@ export class SessionManager {
     // "LID" (@lid) — um id de privacidade que NÃO é o número. Resolvemos o
     // telefone de verdade (senão a empresa não consegue ligar/contatar).
     const phone  = await this._resolvePhone(jid, msg, sock)   // string ou null
-    const name   = msg.pushName || phone || 'Contato'
+    // pushName SÓ vale quando a mensagem é do CONTATO — quando é from-me,
+    // pushName é o nome do próprio dono do WhatsApp (ex: "Dayane Alves Green
+    // Hub" da GreenHub), NÃO do interlocutor. Se salvássemos ele como nome
+    // do contato, a lista inteira ficaria com o nome do dono da empresa.
+    const contactPushName = fromMe ? null : msg.pushName
+    const name   = contactPushName || phone || 'Contato'
     const media  = detectMediaType(msg)
 
     // 0. TRAVA DE DUPLICATA: grava a mensagem ANTES de qualquer efeito colateral.
@@ -906,7 +932,7 @@ export class SessionManager {
             phone = COALESCE(?, phone),
             name  = CASE WHEN (name IS NULL OR name='' OR name=phone) THEN COALESCE(?, name) ELSE name END
         WHERE id=? AND session_id=?
-      `).run(body, ts, fromMe ? 0 : 1, phone, msg.pushName || phone || null, jid, sessionId)
+      `).run(body, ts, fromMe ? 0 : 1, phone, contactPushName || phone || null, jid, sessionId)
     } else {
       this.db.prepare(`
         INSERT OR IGNORE INTO conversations(id,session_id,name,phone,last_message,last_message_at,unread_count)
