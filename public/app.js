@@ -949,17 +949,26 @@ async function loadProfilePic(conv) {
   const initials = document.getElementById('chat-avatar-initials')
 
   img.classList.add('hidden')
+  img.removeAttribute('src')     // limpa a foto da conversa anterior
   initials.classList.remove('hidden')
 
   try {
     const res  = await fetch(`/api/conversations/${encodeURIComponent(conv.id)}/profile-picture?session_id=${conv.session_id}`, { headers: TENANT_HEADERS })
     const data = await res.json()
-    if (data.url) {
-      img.src = data.url
-      img.onload  = () => { img.classList.remove('hidden'); initials.classList.add('hidden') }
-      img.onerror = () => { img.classList.add('hidden');    initials.classList.remove('hidden') }
-    }
-  } catch (_) { /* sem foto */ }
+    if (!data.url) return
+
+    // A conversa pode ter mudado enquanto a requisição estava no ar — só aplica
+    // se ainda estamos na MESMA conversa (evita foto de um contato aparecer noutro)
+    if (!state.activeConversation || state.activeConversation.id !== conv.id) return
+
+    // CRÍTICO: anexar onload/onerror ANTES de setar o src. Se a imagem vier do
+    // cache/CDN rápido, o onload dispararia antes do handler existir e a foto
+    // ficava carregada mas ESCONDIDA pra sempre (era o bug). Carrega direto do
+    // servidor do WhatsApp — nada é baixado pra cá (zero peso no nosso servidor).
+    img.onload  = () => { img.classList.remove('hidden'); initials.classList.add('hidden') }
+    img.onerror = () => { img.classList.add('hidden');    initials.classList.remove('hidden') }
+    img.src = data.url
+  } catch (_) { /* sem foto — segue com as iniciais */ }
 }
 
 function renderMediaContent(msg) {
