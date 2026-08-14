@@ -378,9 +378,12 @@ app.post('/api/sessions/:id/reconnect', async (req, res) => {
   const pairingPhone = norm.phone
 
   if (pairingPhone) {
-    // Zera a vinculação antes (mantendo conversas) quando pedido: credencial
-    // antiga presa impediria o código novo de ser gerado.
-    if (force_relink) await sm.clearCredentials(req.params.id, s.name).catch(console.error)
+    // Pareamento por CÓDIGO sempre exige começar do zero: com credencial
+    // antiga presente, o Baileys tenta LOGAR direto (em vez de gerar um novo
+    // código) e falha em silêncio. Antes esse clear era opcional (force_relink),
+    // o que fazia a reconexão por código não funcionar em sessão previamente
+    // vinculada. As CONVERSAS ficam intactas — só a vinculação é apagada.
+    await sm.clearCredentials(req.params.id, s.name).catch(console.error)
     db.prepare("UPDATE sessions SET status='connecting' WHERE id=?").run(req.params.id)
     sm.connect(req.params.id, s.name, pairingPhone).catch(console.error)
   } else {
