@@ -1214,12 +1214,24 @@ export class SessionManager {
     const sock = this.sockets.get(sessionId)
     if (!sock) return row?.profile_pic || null
 
+    // Converte @lid pro @s.whatsapp.net do telefone real. O WhatsApp não expõe
+    // foto pra LID (ID de privacidade) — chamadas retornavam nulas em silêncio.
+    // Sem essa resolução, a foto NUNCA aparece pra conversas endereçadas por LID
+    // (que hoje é a maioria).
+    let jidPic = jid
+    if (jid?.endsWith('@lid')) {
+      try {
+        const pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(jid)
+        if (pn && String(pn).endsWith('@s.whatsapp.net')) jidPic = pn
+      } catch (_) { /* sem mapping local ainda — segue com o LID mesmo */ }
+    }
+
     let url = null
     let err = null
-    try { url = await sock.profilePictureUrl(jid, 'image') }
+    try { url = await sock.profilePictureUrl(jidPic, 'image') }
     catch (e1) {
       err = e1?.message
-      try { url = await sock.profilePictureUrl(jid, 'preview') }
+      try { url = await sock.profilePictureUrl(jidPic, 'preview') }
       catch (e2) { err = e2?.message; url = null }
     }
 
