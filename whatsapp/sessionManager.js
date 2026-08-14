@@ -1203,47 +1203,52 @@ export class SessionManager {
      Sem foto ou usuário sem foto configurada = grava string vazia (marca que
      tentamos), evita repetir consulta ao Baileys a cada abertura. */
   async getProfilePicture(sessionId, jid) {
-    // 1. cache no banco: se já tentou antes, respeita (URLs do WhatsApp expiram;
-    //    revalidamos a cada 6h)
     const row = this.db.prepare(
-      'SELECT profile_pic FROM conversations WHERE id=? AND session_id=?'
+      'SELECT profile_pic, phone FROM conversations WHERE id=? AND session_id=?'
     ).get(jid, sessionId)
-    // (se profile_pic estiver setado e ainda válido, o frontend já usa direto
-    // da lista; este método só é chamado quando não há URL em cache útil)
 
     const sock = this.sockets.get(sessionId)
     if (!sock) return row?.profile_pic || null
 
-    // Converte @lid pro @s.whatsapp.net do telefone real. O WhatsApp não expõe
-    // foto pra LID (ID de privacidade) — chamadas retornavam nulas em silêncio.
-    // Sem essa resolução, a foto NUNCA aparece pra conversas endereçadas por LID
-    // (que hoje é a maioria).
-    let jidPic = jid
+    // Monta a lista de JIDs a tentar, em ordem de confiabilidade:
+    //  1. o telefone REAL já salvo na conversa (mais confiável — o WhatsApp não
+    //     expõe foto pra @lid, só pro @s.whatsapp.net do número)
+    //  2. o LID→PN do mapa local do Baileys (se disponível)
+    //  3. o próprio jid como veio (caso já seja @s.whatsapp.net)
+    const candidatos = []
+    const digitos = String(row?.phone || '').replace(/\D/g, '')
+    if (digitos.length >= 10) candidatos.push(`${digitos}@s.whatsapp.net`)
     if (jid?.endsWith('@lid')) {
       try {
         const pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(jid)
-        if (pn && String(pn).endsWith('@s.whatsapp.net')) jidPic = pn
-      } catch (_) { /* sem mapping local ainda — segue com o LID mesmo */ }
+        if (pn && String(pn).endsWith('@s.whatsapp.net')) candidatos.push(pn)
+      } catch (_) {}
     }
+    candidatos.push(jid)
+    // remove duplicados preservando ordem
+    const tentar = [...new Set(candidatos)]
 
     let url = null
-    let err = null
-    try { url = await sock.profilePictureUrl(jidPic, 'image') }
-    catch (e1) {
-      err = e1?.message
-      try { url = await sock.profilePictureUrl(jidPic, 'preview') }
-      catch (e2) { err = e2?.message; url = null }
+    const erros = []
+    for (const alvo of tentar) {
+      try { url = await sock.profilePictureUrl(alvo, 'image'); if (url) { break } }
+      catch (e1) {
+        try { url = await sock.profilePictureUrl(alvo, 'preview'); if (url) { break } }
+        catch (e2) { erros.push(`${alvo}:${e2?.message || e1?.message}`) }
+      }
     }
 
-    // Cache no banco (mesmo NULL — evita bater no Baileys de novo a cada F5
-    // pra contatos que não têm foto configurada). O CASE preserva o registro
-    // se a conversa ainda não existir (evita criar linha "fantasma").
-    try {
-      this.db.prepare('UPDATE conversations SET profile_pic = ? WHERE id=? AND session_id=?')
-        .run(url || '', jid, sessionId)
-    } catch (_) {}
+    console.log(`[pic] ${jid} | tentou=[${tentar.join(', ')}] | ${url ? 'FOTO OK' : 'sem foto (' + (erros.join(' | ') || 'todas retornaram vazio') + ')'}`)
 
-    if (!url) console.log(`[pic] sem foto para ${jid} (${err || 'sem erro'})`)
+    // Cache no banco — só grava URL boa. NÃO grava '' pra permitir nova tentativa
+    // numa próxima abertura (a foto pode aparecer depois que o WhatsApp sincroniza).
+    if (url) {
+      try {
+        this.db.prepare('UPDATE conversations SET profile_pic = ? WHERE id=? AND session_id=?')
+          .run(url, jid, sessionId)
+      } catch (_) {}
+    }
+
     return url
   }
 
