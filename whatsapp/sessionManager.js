@@ -1197,13 +1197,42 @@ export class SessionManager {
     return result
   }
 
-  /* ── Foto de perfil ── */
+  /* ── Foto de perfil ──
+     Tenta 'image' (alta) → cai pra 'preview' (baixa) → nada.
+     Salva no banco pra evitar re-fetch e pra aparecer na LISTA de conversas.
+     Sem foto ou usuário sem foto configurada = grava string vazia (marca que
+     tentamos), evita repetir consulta ao Baileys a cada abertura. */
   async getProfilePicture(sessionId, jid) {
+    // 1. cache no banco: se já tentou antes, respeita (URLs do WhatsApp expiram;
+    //    revalidamos a cada 6h)
+    const row = this.db.prepare(
+      'SELECT profile_pic FROM conversations WHERE id=? AND session_id=?'
+    ).get(jid, sessionId)
+    // (se profile_pic estiver setado e ainda válido, o frontend já usa direto
+    // da lista; este método só é chamado quando não há URL em cache útil)
+
     const sock = this.sockets.get(sessionId)
-    if (!sock) return null
-    try { return await sock.profilePictureUrl(jid, 'image') } catch (_) {
-      try { return await sock.profilePictureUrl(jid, 'preview') } catch (_) { return null }
+    if (!sock) return row?.profile_pic || null
+
+    let url = null
+    let err = null
+    try { url = await sock.profilePictureUrl(jid, 'image') }
+    catch (e1) {
+      err = e1?.message
+      try { url = await sock.profilePictureUrl(jid, 'preview') }
+      catch (e2) { err = e2?.message; url = null }
     }
+
+    // Cache no banco (mesmo NULL — evita bater no Baileys de novo a cada F5
+    // pra contatos que não têm foto configurada). O CASE preserva o registro
+    // se a conversa ainda não existir (evita criar linha "fantasma").
+    try {
+      this.db.prepare('UPDATE conversations SET profile_pic = ? WHERE id=? AND session_id=?')
+        .run(url || '', jid, sessionId)
+    } catch (_) {}
+
+    if (!url) console.log(`[pic] sem foto para ${jid} (${err || 'sem erro'})`)
+    return url
   }
 
   /* ── Disconnect ── */
