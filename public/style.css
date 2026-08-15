@@ -37,11 +37,17 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 
 .panel-header {
   display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; row-gap: 8px;
   padding: 16px 14px 12px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 .panel-title { font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: .3px; }
+
+/* Botões de ação do cabeçalho (ex: painel Números) — cresceram de 4 pra 5 ícones
+   e passaram a cortar em telas estreitas (sidebar de 220px, mobile). Em vez de
+   cortar, quebra pra uma segunda linha alinhada à direita. */
+.panel-header-actions { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 
 /* ── Sessões ── */
 .session-item {
