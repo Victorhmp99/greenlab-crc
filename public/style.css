@@ -314,6 +314,30 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 #send-btn:active { transform: scale(.95); }
 #send-btn:disabled { opacity: .4; cursor: not-allowed; }
 
+/* ── Autocomplete de respostas rápidas ── */
+.qreply-suggest {
+  margin: 0 16px; background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden; flex-shrink: 0;
+}
+.qreply-suggest.hidden { display: none; }
+.qreply-suggest-item {
+  display: flex; align-items: baseline; gap: 8px; padding: 8px 12px;
+  cursor: pointer; font-size: 13px; border-bottom: 1px solid var(--border);
+}
+.qreply-suggest-item:last-child { border-bottom: none; }
+.qreply-suggest-item strong { color: var(--green); flex-shrink: 0; }
+.qreply-suggest-item span { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qreply-suggest-item.active, .qreply-suggest-item:hover { background: var(--bg-3, rgba(255,255,255,.04)); }
+
+/* ── Lista de respostas rápidas (modal) ── */
+.qreply-item {
+  display: flex; align-items: flex-start; gap: 8px; padding: 8px;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px;
+}
+.qreply-item-text { flex: 1; min-width: 0; font-size: 12px; }
+.qreply-item-text strong { color: var(--green); font-size: 13px; }
+.qreply-item-text p { margin: 2px 0 0; color: var(--text-2); word-break: break-word; }
+
 /* ── Preview de arquivo antes de enviar ── */
 #file-preview {
   display: flex; align-items: center; gap: 8px;

@@ -657,6 +657,75 @@ app.post('/api/push/unsubscribe', (req, res) => {
   res.json({ ok: true })
 })
 
+/* ── Respostas rápidas (atalhos "/nome" que expandem pra um texto pronto)
+   Compartilhadas por empresa — qualquer pessoa da equipe da mesma empresa
+   vê, usa e pode editar. Não é dado sensível, é texto de atendimento. ── */
+
+function cleanShortcut(raw) {
+  return String(raw || '').trim().replace(/^\/+/, '').toLowerCase().slice(0, 40)
+}
+
+app.get('/api/quick-replies', (req, res) => {
+  const tenants = getTenants(req)
+  if (!tenants.length) return res.json([])
+  const params = []
+  let sql = 'SELECT * FROM quick_replies WHERE 1=1'
+  sql += buildTenantFilter(tenants, params)
+  sql += ' ORDER BY shortcut ASC'
+  res.json(db.prepare(sql).all(...params))
+})
+
+app.post('/api/quick-replies', (req, res) => {
+  const { tenant_id, shortcut, message } = req.body || {}
+  if (!tenant_id || !shortcut?.trim() || !message?.trim())
+    return res.status(400).json({ error: 'tenant_id, shortcut e message são obrigatórios' })
+  if (!getTenants(req).includes(tenant_id))
+    return res.status(403).json({ error: 'Sem permissão para esta empresa' })
+
+  const clean = cleanShortcut(shortcut)
+  if (!/^[a-z0-9_-]+$/.test(clean))
+    return res.status(400).json({ error: 'Atalho deve conter só letras, números, - e _' })
+
+  const id = crypto.randomUUID()
+  try {
+    db.prepare(
+      'INSERT INTO quick_replies (id, tenant_id, shortcut, message, created_by) VALUES (?, ?, ?, ?, ?)'
+    ).run(id, tenant_id, clean, message.trim().slice(0, 4000), getUserId(req))
+  } catch (e) {
+    return res.status(409).json({ error: `Já existe um atalho "/${clean}" nesta empresa` })
+  }
+  res.json(db.prepare('SELECT * FROM quick_replies WHERE id = ?').get(id))
+})
+
+app.put('/api/quick-replies/:id', (req, res) => {
+  const row = db.prepare('SELECT * FROM quick_replies WHERE id = ?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Não encontrado' })
+  if (!getTenants(req).includes(row.tenant_id))
+    return res.status(403).json({ error: 'Sem permissão' })
+
+  const { shortcut, message } = req.body || {}
+  const clean = shortcut ? cleanShortcut(shortcut) : row.shortcut
+  if (shortcut && !/^[a-z0-9_-]+$/.test(clean))
+    return res.status(400).json({ error: 'Atalho deve conter só letras, números, - e _' })
+
+  try {
+    db.prepare('UPDATE quick_replies SET shortcut = ?, message = ? WHERE id = ?')
+      .run(clean, (message?.trim() || row.message).slice(0, 4000), req.params.id)
+  } catch (e) {
+    return res.status(409).json({ error: `Já existe um atalho "/${clean}" nesta empresa` })
+  }
+  res.json(db.prepare('SELECT * FROM quick_replies WHERE id = ?').get(req.params.id))
+})
+
+app.delete('/api/quick-replies/:id', (req, res) => {
+  const row = db.prepare('SELECT * FROM quick_replies WHERE id = ?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Não encontrado' })
+  if (!getTenants(req).includes(row.tenant_id))
+    return res.status(403).json({ error: 'Sem permissão' })
+  db.prepare('DELETE FROM quick_replies WHERE id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
 app.get('/health', (_req, res) => res.json({ ok: true }))
 
 app.get('*', (_req, res) => {

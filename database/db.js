@@ -67,6 +67,19 @@ export function initDB() {
     );
     CREATE INDEX IF NOT EXISTS idx_push_tenant
       ON push_subscriptions(tenant_id);
+
+    -- Respostas rápidas (atalhos "/nome" que expandem pra um texto pronto).
+    -- Compartilhadas por empresa: qualquer pessoa da equipe vê e usa as mesmas.
+    CREATE TABLE IF NOT EXISTS quick_replies (
+      id         TEXT PRIMARY KEY,
+      tenant_id  TEXT NOT NULL,
+      shortcut   TEXT NOT NULL,
+      message    TEXT NOT NULL,
+      created_by TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_qr_tenant_shortcut
+      ON quick_replies(tenant_id, shortcut);
   `)
 
   for (const col of [

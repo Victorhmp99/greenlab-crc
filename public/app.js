@@ -56,6 +56,7 @@ const state = {
   pendingFile:        null,
   editingMessage:     null,   // {id, body} — mensagem sendo editada, ou null
   pendingQrSession:   null,   // sessão cujo QR estamos aguardando (modal aberto)
+  quickReplies:       [],     // atalhos "/nome" compartilhados por empresa
   connectMethod:      'qr',   // 'qr' ou 'code' — método escolhido no modal de adicionar
   mobileView:         'sessions', // 'sessions' | 'conversations' | 'chat' — só importa em tela estreita
 }
@@ -500,7 +501,7 @@ function handleAuthFailure(res) {
 /* ── Init ─────────────────────────────────────────────────── */
 
 async function init() {
-  await Promise.all([loadSessions(), loadConversations()])
+  await Promise.all([loadSessions(), loadConversations(), loadQuickReplies()])
 }
 
 // Ao carregar a página: se já tem sessão salva, entra direto sem pedir login de novo
@@ -900,6 +901,7 @@ async function openConversation(convId, sessionId) {
   if (!conv) return
   state.activeConversation = conv
   setMobileView('chat')
+  hideQuickReplySuggest()
 
   document.getElementById('chat-empty').classList.add('hidden')
   document.getElementById('chat-content').classList.remove('hidden')
@@ -1075,6 +1077,7 @@ async function sendMessage() {
   btn.disabled = true
   input.value  = ''
   autoResize(input)
+  hideQuickReplySuggest()
 
   try {
     const res = await fetch(`/api/conversations/${encodeURIComponent(conv.id)}/messages`, {
@@ -1094,8 +1097,173 @@ async function sendMessage() {
 }
 
 function onMsgKeydown(e) {
+  if (quickReplySuggestItems.length) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); quickReplyActiveIndex = Math.min(quickReplyActiveIndex + 1, quickReplySuggestItems.length - 1); highlightQuickReplySuggest(); return }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); quickReplyActiveIndex = Math.max(quickReplyActiveIndex - 1, 0); highlightQuickReplySuggest(); return }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickQuickReplySuggest(quickReplyActiveIndex); return }
+    if (e.key === 'Escape') { hideQuickReplySuggest(); return }
+  }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
   if (e.key === 'Escape' && state.editingMessage) { cancelEditMessage() }
+}
+
+/* ── Respostas rápidas (atalhos "/nome" que expandem pra texto pronto) ──
+   Compartilhadas por empresa: qualquer pessoa da equipe da mesma empresa
+   vê e usa as mesmas. Digitar "/algo" na caixa de mensagem abre o dropdown. */
+
+async function loadQuickReplies() {
+  const res = await fetch('/api/quick-replies', { headers: TENANT_HEADERS })
+  if (!res.ok) { state.quickReplies = []; return }
+  state.quickReplies = await res.json()
+}
+
+let editingQuickReplyId = null   // id da resposta rápida em edição, ou null (criando nova)
+
+function openQuickRepliesModal() {
+  const sel = document.getElementById('qreply-tenant')
+  sel.innerHTML = AVAILABLE_TENANTS.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('')
+  document.getElementById('qreply-tenant-wrap').classList.toggle('hidden', AVAILABLE_TENANTS.length <= 1)
+  cancelEditQuickReply()
+  renderQuickRepliesList()
+  document.getElementById('modal-quick-replies').classList.remove('hidden')
+}
+
+function closeQuickRepliesModal() {
+  document.getElementById('modal-quick-replies').classList.add('hidden')
+}
+
+function renderQuickRepliesList() {
+  const list = document.getElementById('qreply-list')
+  if (!state.quickReplies.length) {
+    list.innerHTML = '<p class="text-muted" style="font-size:12px;padding:8px 0">Nenhuma resposta rápida ainda.</p>'
+    return
+  }
+  list.innerHTML = state.quickReplies.map(qr => `
+    <div class="qreply-item">
+      <div class="qreply-item-text">
+        <strong>/${esc(qr.shortcut)}</strong>${AVAILABLE_TENANTS.length > 1 ? `<span class="text-muted" style="font-size:11px"> · ${esc(TENANT_NAMES[qr.tenant_id] || '')}</span>` : ''}
+        <p>${esc(qr.message)}</p>
+      </div>
+      <div style="display:flex;gap:2px;flex-shrink:0">
+        <button class="btn-muted" title="Editar" onclick="editQuickReply('${qr.id}')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+        </button>
+        <button class="btn-danger" title="Excluir" onclick="deleteQuickReply('${qr.id}')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+        </button>
+      </div>
+    </div>
+  `).join('')
+}
+
+function editQuickReply(id) {
+  const qr = state.quickReplies.find(q => q.id === id)
+  if (!qr) return
+  editingQuickReplyId = id
+  document.getElementById('qreply-tenant').value   = qr.tenant_id
+  document.getElementById('qreply-shortcut').value = qr.shortcut
+  document.getElementById('qreply-message').value  = qr.message
+  document.getElementById('qreply-submit-btn').textContent = 'Salvar edição'
+  document.getElementById('qreply-cancel-btn').classList.remove('hidden')
+  document.getElementById('qreply-shortcut').focus()
+}
+
+function cancelEditQuickReply() {
+  editingQuickReplyId = null
+  document.getElementById('qreply-shortcut').value = ''
+  document.getElementById('qreply-message').value  = ''
+  document.getElementById('qreply-submit-btn').textContent = 'Salvar'
+  document.getElementById('qreply-cancel-btn').classList.add('hidden')
+}
+
+async function submitQuickReply() {
+  const shortcut = document.getElementById('qreply-shortcut').value
+  const message  = document.getElementById('qreply-message').value
+  if (!shortcut.trim() || !message.trim()) return showToast('Preencha atalho e mensagem', 'error')
+
+  let res
+  if (editingQuickReplyId) {
+    res = await fetch(`/api/quick-replies/${editingQuickReplyId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
+      body: JSON.stringify({ shortcut, message }),
+    })
+  } else {
+    const tenant_id = document.getElementById('qreply-tenant').value
+    res = await fetch('/api/quick-replies', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
+      body: JSON.stringify({ tenant_id, shortcut, message }),
+    })
+  }
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) return showToast(data.error || 'Erro ao salvar', 'error')
+
+  const wasEditing = !!editingQuickReplyId
+  cancelEditQuickReply()
+  await loadQuickReplies()
+  renderQuickRepliesList()
+  showToast(wasEditing ? 'Resposta rápida atualizada' : 'Resposta rápida salva', 'success')
+}
+
+async function deleteQuickReply(id) {
+  const ok = await showConfirm('Excluir resposta rápida', 'Essa ação não pode ser desfeita.', 'Excluir', true)
+  if (!ok) return
+  if (editingQuickReplyId === id) cancelEditQuickReply()
+  await fetch(`/api/quick-replies/${id}`, { method: 'DELETE', headers: TENANT_HEADERS })
+  await loadQuickReplies()
+  renderQuickRepliesList()
+}
+
+/* ── Autocomplete no campo de mensagem ── */
+let quickReplySuggestItems = []
+let quickReplyActiveIndex  = -1
+
+function onMsgInput(el) {
+  const match = /^\/([a-z0-9_-]{0,40})$/i.exec(el.value)
+  if (!match) { hideQuickReplySuggest(); return }
+
+  const conv     = state.activeConversation
+  const tenantId = conv ? state.sessions.find(s => s.id === conv.session_id)?.tenant_id : null
+  const q        = match[1].toLowerCase()
+  const matches  = state.quickReplies
+    .filter(qr => (!tenantId || qr.tenant_id === tenantId) && qr.shortcut.startsWith(q))
+    .slice(0, 6)
+
+  if (!matches.length) { hideQuickReplySuggest(); return }
+  renderQuickReplySuggest(matches)
+}
+
+function renderQuickReplySuggest(items) {
+  quickReplySuggestItems = items
+  quickReplyActiveIndex  = 0
+  const box = document.getElementById('qreply-suggest')
+  box.innerHTML = items.map((qr, i) => `
+    <div class="qreply-suggest-item ${i === 0 ? 'active' : ''}" data-i="${i}" onmousedown="event.preventDefault();pickQuickReplySuggest(${i})">
+      <strong>/${esc(qr.shortcut)}</strong>
+      <span>${esc(qr.message.slice(0, 60))}</span>
+    </div>
+  `).join('')
+  box.classList.remove('hidden')
+}
+
+function highlightQuickReplySuggest() {
+  document.querySelectorAll('.qreply-suggest-item').forEach((el, i) => el.classList.toggle('active', i === quickReplyActiveIndex))
+}
+
+function hideQuickReplySuggest() {
+  quickReplySuggestItems = []
+  quickReplyActiveIndex  = -1
+  const box = document.getElementById('qreply-suggest')
+  if (box) box.classList.add('hidden')
+}
+
+function pickQuickReplySuggest(i) {
+  const qr = quickReplySuggestItems[i]
+  if (!qr) return
+  const input = document.getElementById('msg-input')
+  input.value = qr.message
+  autoResize(input)
+  hideQuickReplySuggest()
+  input.focus()
 }
 
 /* ── Editar mensagem enviada (estilo WhatsApp) ───────────────
