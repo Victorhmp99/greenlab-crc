@@ -529,7 +529,7 @@ app.get('/api/conversations/:jid/messages', (req, res) => {
 })
 
 app.post('/api/conversations/:jid/messages', async (req, res) => {
-  const { body, session_id } = req.body
+  const { body, session_id, quoted_id } = req.body
   if (!body?.trim() || !session_id) return res.status(400).json({ error: 'body e session_id obrigatórios' })
   // Limite de tamanho (WhatsApp ~65k; cap defensivo)
   if (body.length > 10000) return res.status(400).json({ error: 'Mensagem muito longa (máx. 10.000 caracteres)' })
@@ -540,13 +540,46 @@ app.post('/api/conversations/:jid/messages', async (req, res) => {
     if (!s || !tenants.includes(s.tenant_id)) return res.status(403).json({ error: 'Sem permissão' })
   }
 
+  // Responder citando: busca a mensagem citada no NOSSO banco (nunca confia
+  // no texto/dono que o cliente mandou) — garante que a citação é fiel.
+  let quoted = null
+  if (quoted_id) {
+    const q = db.prepare('SELECT id, body, from_me FROM messages WHERE id = ? AND conversation_id = ? AND session_id = ?')
+      .get(quoted_id, req.params.jid, session_id)
+    if (q) quoted = { id: q.id, body: q.body, fromMe: !!q.from_me }
+  }
+
   try {
-    await sm.sendMessage(session_id, req.params.jid, body.trim())
+    await sm.sendMessage(session_id, req.params.jid, body.trim(), quoted)
     res.json({ ok: true })
   } catch (e) {
     console.error('[sendMessage] ERRO:', e.message)
     res.status(500).json({ error: e.message })
   }
+})
+
+// Etiqueta + anotação da conversa (organização visual — ex: atendente
+// responsável, serviço buscado). Não afeta o WhatsApp, é só metadado local.
+app.put('/api/conversations/:jid', (req, res) => {
+  const { session_id, label, label_color, note } = req.body || {}
+  if (!session_id) return res.status(400).json({ error: 'session_id obrigatório' })
+
+  const tenants = getTenants(req)
+  if (tenants.length) {
+    const s = db.prepare('SELECT tenant_id FROM sessions WHERE id = ?').get(session_id)
+    if (!s || !tenants.includes(s.tenant_id)) return res.status(403).json({ error: 'Sem permissão' })
+  }
+
+  const exists = db.prepare('SELECT id FROM conversations WHERE id = ? AND session_id = ?').get(req.params.jid, session_id)
+  if (!exists) return res.status(404).json({ error: 'Conversa não encontrada' })
+
+  db.prepare('UPDATE conversations SET label = ?, label_color = ?, note = ? WHERE id = ? AND session_id = ?').run(
+    label?.trim().slice(0, 40) || null,
+    label_color?.trim().slice(0, 20) || null,
+    note?.trim().slice(0, 2000) || null,
+    req.params.jid, session_id
+  )
+  res.json(db.prepare('SELECT * FROM conversations WHERE id = ? AND session_id = ?').get(req.params.jid, session_id))
 })
 
 // Edita uma mensagem já enviada (estilo WhatsApp — só texto, só até 15min, só suas próprias)

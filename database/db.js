@@ -97,6 +97,18 @@ export function initDB() {
     // (afinal "já tem foto") e o navegador não conseguia carregar, caindo nas
     // iniciais. Com a data, dá pra renovar as vencidas.
     `ALTER TABLE conversations ADD COLUMN profile_pic_at TEXT`,
+    // Responder citando mensagem (estilo WhatsApp): guarda uma cópia (não FK)
+    // do texto/autor citado no momento do envio — assim a citação continua
+    // aparecendo mesmo se a mensagem original for apagada localmente depois.
+    `ALTER TABLE messages ADD COLUMN quoted_id TEXT`,
+    `ALTER TABLE messages ADD COLUMN quoted_body TEXT`,
+    `ALTER TABLE messages ADD COLUMN quoted_from_me INTEGER`,
+    // Etiqueta + anotação por conversa — organização visual (ex: nome do
+    // atendente responsável, serviço que o contato procura). Não é um
+    // sistema de categorias com aba própria, só um rótulo colorido na lista.
+    `ALTER TABLE conversations ADD COLUMN label TEXT`,
+    `ALTER TABLE conversations ADD COLUMN label_color TEXT`,
+    `ALTER TABLE conversations ADD COLUMN note TEXT`,
   ]) {
     try { db.exec(col) } catch (_) { /* coluna já existe */ }
   }

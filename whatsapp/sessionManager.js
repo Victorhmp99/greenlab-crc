@@ -251,6 +251,19 @@ function unwrapMessage(m, depth = 0) {
   return inner ? unwrapMessage(inner, depth + 1) : m
 }
 
+/* Acha o contextInfo (onde mora a citação de "responder a") dentro do tipo
+   específico da mensagem — mora em extendedTextMessage.contextInfo,
+   imageMessage.contextInfo, etc., nunca solto. */
+function extractContextInfo(m) {
+  const inner = unwrapMessage(m)
+  if (!inner) return null
+  for (const key of Object.keys(inner)) {
+    const val = inner[key]
+    if (val && typeof val === 'object' && val.contextInfo) return val.contextInfo
+  }
+  return null
+}
+
 /* Só estes são de controle interno (não são conteúdo que o atendente precise
    ver). Todo o RESTO tem que aparecer — perder mensagem aqui é perder lead. */
 function isControlMessage(m) {
@@ -932,15 +945,33 @@ export class SessionManager {
     const name   = contactPushName || phone || 'Contato'
     const media  = detectMediaType(msg)
 
+    // Responder citando mensagem: se essa mensagem é uma resposta a outra,
+    // tenta achar a citada no nosso próprio histórico (fonte confiável de
+    // body/autor). Se não achar (ex: citou msg de antes do CRC existir),
+    // cai pro texto embutido no proto como último recurso.
+    const ctx = extractContextInfo(msg.message)
+    let quotedId = null, quotedBody = null, quotedFromMe = null
+    if (ctx?.stanzaId) {
+      quotedId = ctx.stanzaId
+      const qRow = this.db.prepare('SELECT body, from_me FROM messages WHERE id=? AND session_id=?')
+        .get(quotedId, sessionId)
+      if (qRow) {
+        quotedBody = qRow.body
+        quotedFromMe = qRow.from_me
+      } else if (ctx.quotedMessage) {
+        quotedBody = ctx.quotedMessage.conversation || ctx.quotedMessage.extendedTextMessage?.text || '[Mensagem]'
+      }
+    }
+
     // 0. TRAVA DE DUPLICATA: grava a mensagem ANTES de qualquer efeito colateral.
     //    A mesma mensagem pode chegar duas vezes (ex: em tempo real e de novo no
     //    lote de recuperação pós-queda). Se já existe, changes=0 e paramos aqui —
     //    senão o contador de não-lidas subiria em dobro e a mensagem apareceria
     //    duplicada na tela.
     const ins = this.db.prepare(`
-      INSERT OR IGNORE INTO messages(id,conversation_id,session_id,from_me,body,media_type,timestamp)
-      VALUES(?,?,?,?,?,?,?)
-    `).run(msgId, jid, sessionId, fromMe ? 1 : 0, body, media?.type ?? null, ts)
+      INSERT OR IGNORE INTO messages(id,conversation_id,session_id,from_me,body,media_type,timestamp,quoted_id,quoted_body,quoted_from_me)
+      VALUES(?,?,?,?,?,?,?,?,?,?)
+    `).run(msgId, jid, sessionId, fromMe ? 1 : 0, body, media?.type ?? null, ts, quotedId, quotedBody, quotedFromMe)
     if (ins.changes === 0) return   // já tínhamos essa mensagem
 
     // 1. Salva/atualiza conversa imediatamente
@@ -971,7 +1002,8 @@ export class SessionManager {
       conversation,
       message: { id: msgId, conversation_id: jid, session_id: sessionId,
                  from_me: fromMe ? 1 : 0, body, media_type: media?.type ?? null,
-                 media_url: null, timestamp: ts },
+                 media_url: null, timestamp: ts,
+                 quoted_id: quotedId, quoted_body: quotedBody, quoted_from_me: quotedFromMe },
     })
 
     // 4. Baixa mídia em background — não bloqueia nada
@@ -1038,21 +1070,35 @@ export class SessionManager {
     }
   }
 
-  /* ── Enviar texto ── */
-  async sendMessage(sessionId, jid, text) {
+  /* ── Enviar texto ──
+     quoted, se passado, é {id, body, fromMe} de uma mensagem já existente na
+     conversa — monta uma citação (estilo "responder") sintética a partir do
+     que já temos salvo, sem precisar do objeto proto original do Baileys. */
+  async sendMessage(sessionId, jid, text, quoted = null) {
     const sock = this._requireSock(sessionId)
     await this._throttle(sessionId)   // anti-banimento
-    const result = await sock.sendMessage(jid, { text })
+
+    const sendOpts = {}
+    if (quoted?.id) {
+      sendOpts.quoted = {
+        key: { remoteJid: jid, id: quoted.id, fromMe: !!quoted.fromMe },
+        message: { conversation: quoted.body || '' },
+      }
+    }
+    const result = await sock.sendMessage(jid, { text }, sendOpts)
 
     const msgId = result?.key?.id || `out_${Date.now()}`
     const ts    = new Date().toISOString()
+    const quotedId     = quoted?.id ?? null
+    const quotedBody   = quoted?.body ?? null
+    const quotedFromMe = quoted ? (quoted.fromMe ? 1 : 0) : null
 
     try {
       this._ensureConversation(jid, sessionId)
       this.db.prepare(`
-        INSERT OR IGNORE INTO messages(id,conversation_id,session_id,from_me,body,timestamp)
-        VALUES(?,?,?,1,?,?)
-      `).run(msgId, jid, sessionId, text, ts)
+        INSERT OR IGNORE INTO messages(id,conversation_id,session_id,from_me,body,timestamp,quoted_id,quoted_body,quoted_from_me)
+        VALUES(?,?,?,1,?,?,?,?,?)
+      `).run(msgId, jid, sessionId, text, ts, quotedId, quotedBody, quotedFromMe)
       this.db.prepare('UPDATE conversations SET last_message=?,last_message_at=? WHERE id=? AND session_id=?')
         .run(text, ts, jid, sessionId)
     } catch (_) {}
@@ -1061,7 +1107,8 @@ export class SessionManager {
     this._emit(sessionId, 'message:new', {
       conversation,
       message: { id: msgId, conversation_id: jid, session_id: sessionId,
-                 from_me: 1, body: text, media_type: null, media_url: null, timestamp: ts },
+                 from_me: 1, body: text, media_type: null, media_url: null, timestamp: ts,
+                 quoted_id: quotedId, quoted_body: quotedBody, quoted_from_me: quotedFromMe },
     })
     return result
   }

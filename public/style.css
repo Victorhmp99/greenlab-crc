@@ -320,6 +320,77 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 #send-btn:active { transform: scale(.95); }
 #send-btn:disabled { opacity: .4; cursor: not-allowed; }
 
+/* ── Separador de data na lista de mensagens ── */
+.date-separator { display: flex; justify-content: center; margin: 10px 0; }
+.date-separator span {
+  background: var(--bg-2); color: var(--text-2); font-size: 11px; font-weight: 600;
+  padding: 4px 12px; border-radius: 12px; border: 1px solid var(--border);
+}
+
+/* ── Botão "ir pro fim" ── */
+.scroll-bottom-btn {
+  position: absolute; right: 20px; bottom: 82px; z-index: 5;
+  width: 36px; height: 36px; border-radius: 50%;
+  background: var(--bg-2); border: 1px solid var(--border); color: var(--text-2);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+  transition: color .15s, border-color .15s;
+}
+.scroll-bottom-btn:hover { color: var(--green); border-color: var(--green); }
+.scroll-bottom-btn.hidden { display: none; }
+#chat-content { position: relative; }
+
+/* ── Citação de mensagem (responder) ── */
+.msg-quote {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 5px 8px; margin-bottom: 5px; border-radius: 6px;
+  background: rgba(0,0,0,.18); border-left: 3px solid var(--green);
+  cursor: pointer; font-size: 12px;
+}
+.msg-quote-author { color: var(--green); font-weight: 600; font-size: 11px; }
+.msg-quote-text { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+.msg-group.from-me .msg-quote { background: rgba(0,0,0,.15); }
+
+.msg-reply-btn, .msg-edit-btn {
+  background: none; border: none; color: var(--text-3); cursor: pointer;
+  padding: 0 2px; display: inline-flex; align-items: center; vertical-align: middle;
+  transition: color .15s;
+}
+.msg-reply-btn:hover, .msg-edit-btn:hover { color: var(--green); }
+
+/* Destaque temporário ao pular pra mensagem citada (clique na citação) */
+.msg-bubble.flash-highlight { animation: flashHighlight 1.2s ease; }
+@keyframes flashHighlight {
+  0%, 100% { box-shadow: none; }
+  30%      { box-shadow: 0 0 0 2px var(--green); }
+}
+
+/* ── Banner de "respondendo a" (acima do campo de digitar) ── */
+#reply-banner {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 16px; background: var(--bg-2); border-top: 1px solid var(--border);
+  color: var(--text-2); font-size: 12px; flex-shrink: 0;
+}
+#reply-banner.hidden { display: none; }
+#reply-banner svg { flex-shrink: 0; color: var(--green); }
+.reply-banner-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.reply-banner-text strong { color: var(--green); font-size: 11px; }
+.reply-banner-text span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#reply-banner button { background: none; border: none; color: var(--text-3); cursor: pointer; font-size: 14px; flex-shrink: 0; }
+#reply-banner button:hover { color: var(--text); }
+
+/* ── Etiqueta da conversa (lista) ── */
+.conv-label {
+  display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px;
+  border-radius: 8px; color: #fff; margin-left: 6px; flex-shrink: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 90px;
+}
+.color-dot {
+  width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
+  border: 2px solid transparent; transition: border-color .15s, transform .1s;
+}
+.color-dot.active { border-color: var(--text); transform: scale(1.1); }
+
 /* ── Autocomplete de respostas rápidas ── */
 .qreply-suggest {
   margin: 0 16px; background: var(--bg-2); border: 1px solid var(--border);

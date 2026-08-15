@@ -55,6 +55,7 @@ const state = {
   activeConversation: null,
   pendingFile:        null,
   editingMessage:     null,   // {id, body} — mensagem sendo editada, ou null
+  replyingTo:         null,   // {id, body, fromMe} — mensagem sendo respondida/citada, ou null
   pendingQrSession:   null,   // sessão cujo QR estamos aguardando (modal aberto)
   quickReplies:       [],     // atalhos "/nome" compartilhados por empresa
   connectMethod:      'qr',   // 'qr' ou 'code' — método escolhido no modal de adicionar
@@ -201,8 +202,11 @@ socket.on('message:new', ({ conversation, message }) => {
   const isThisConvOpen = active && active.id === message.conversation_id && active.session_id === message.session_id
 
   if (isThisConvOpen) {
+    const list = document.getElementById('messages-list')
+    const wasNearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 150
     appendMessage(message)
-    scrollToBottom()
+    if (wasNearBottom || message.from_me) scrollToBottom()
+    else document.getElementById('scroll-bottom-btn').classList.remove('hidden')
   }
 
   // Notificação estilo WhatsApp — só avisos passivos (lê o que já chegou),
@@ -831,6 +835,7 @@ function renderConversations() {
           <span class="conv-name">${esc(c.name || c.phone)}</span>
           <span class="conv-time">${formatTime(c.last_message_at)}</span>
         </div>
+        ${c.label ? `<span class="conv-label" style="background:${esc(c.label_color || '#666')}">${esc(c.label)}</span>` : ''}
         <div class="conv-bottom">
           <span class="conv-preview">${previewIcon(c.last_message)}${esc(c.last_message || '')}</span>
           <span class="conv-session-tag" style="border-left:2px solid ${sColor};padding-left:5px">${esc(c.session_name)}</span>
@@ -902,6 +907,9 @@ async function openConversation(convId, sessionId) {
   state.activeConversation = conv
   setMobileView('chat')
   hideQuickReplySuggest()
+  cancelReply()
+  if (state.editingMessage) cancelEditMessage()
+  document.getElementById('scroll-bottom-btn').classList.add('hidden')
 
   document.getElementById('chat-empty').classList.add('hidden')
   document.getElementById('chat-content').classList.remove('hidden')
@@ -939,8 +947,10 @@ async function loadMessages(convId, sessionId) {
 
   const list = document.getElementById('messages-list')
   list.innerHTML = ''
+  list.dataset.lastDay = ''   // zera o separador de data pra recontar do zero
   msgs.forEach(m => appendMessage(m))
   scrollToBottom()
+  document.getElementById('scroll-bottom-btn').classList.add('hidden')
 }
 
 // Botão "Atualizar" no cabeçalho da conversa aberta
@@ -985,6 +995,53 @@ async function loadProfilePic(conv) {
   } catch (_) { /* sem foto — segue com as iniciais */ }
 }
 
+/* ── Etiqueta + anotação da conversa (organização visual — ex: atendente
+   responsável, serviço buscado). Puramente local ao CRC, não mexe no WhatsApp. */
+const CONV_LABEL_COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#64748b']
+let convNoteColor = CONV_LABEL_COLORS[0]
+
+function openConvNoteModal() {
+  const conv = state.activeConversation
+  if (!conv) return
+  document.getElementById('convnote-label').value = conv.label || ''
+  document.getElementById('convnote-text').value  = conv.note  || ''
+  convNoteColor = conv.label_color || CONV_LABEL_COLORS[0]
+  renderConvNoteColors()
+  document.getElementById('modal-conv-note').classList.remove('hidden')
+}
+
+function closeConvNoteModal() { document.getElementById('modal-conv-note').classList.add('hidden') }
+
+function renderConvNoteColors() {
+  const wrap = document.getElementById('convnote-color-wrap')
+  wrap.innerHTML = CONV_LABEL_COLORS.map(c =>
+    `<div class="color-dot ${c === convNoteColor ? 'active' : ''}" style="background:${c}" onclick="pickConvNoteColor('${c}')"></div>`
+  ).join('')
+}
+
+function pickConvNoteColor(c) { convNoteColor = c; renderConvNoteColors() }
+
+async function saveConvNote() {
+  const conv = state.activeConversation
+  if (!conv) return
+  const label = document.getElementById('convnote-label').value.trim()
+  const note  = document.getElementById('convnote-text').value.trim()
+
+  const res = await fetch(`/api/conversations/${encodeURIComponent(conv.id)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
+    body: JSON.stringify({ session_id: conv.session_id, label, label_color: convNoteColor, note }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) return showToast(data.error || 'Erro ao salvar', 'error')
+
+  const idx = state.conversations.findIndex(c => c.id === conv.id && c.session_id === conv.session_id)
+  if (idx >= 0) state.conversations[idx] = data
+  state.activeConversation = data
+  renderConversations()
+  closeConvNoteModal()
+  showToast('Anotação salva', 'success')
+}
+
 function renderMediaContent(msg) {
   const mt = msg.media_type
   const mu = msg.media_url
@@ -1019,8 +1076,37 @@ function renderMediaContent(msg) {
 
 const EDIT_WINDOW_MS = 15 * 60 * 1000   // mesma janela que o servidor aplica
 
+// "Hoje" / "Ontem" / dd/mm(/aaaa) — usado só no separador entre dias, formatTime cuida do resto
+function dateSeparatorLabel(iso) {
+  const d     = new Date(iso)
+  const now   = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const day   = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  const diff  = Math.round((today - day) / 86400000)
+  if (diff === 0) return 'Hoje'
+  if (diff === 1) return 'Ontem'
+  return d.toLocaleDateString('pt-BR', {
+    day: '2-digit', month: '2-digit',
+    year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
+  })
+}
+
+// Insere um separador de dia sempre que a mensagem pertence a um dia diferente
+// do último renderizado na lista (guardado em list.dataset — zerado em loadMessages)
+function maybeInsertDateSeparator(list, msg) {
+  const day = new Date(msg.timestamp).toDateString()
+  if (list.dataset.lastDay === day) return
+  list.dataset.lastDay = day
+  const sep = document.createElement('div')
+  sep.className = 'date-separator'
+  sep.innerHTML = `<span>${dateSeparatorLabel(msg.timestamp)}</span>`
+  list.appendChild(sep)
+}
+
 function appendMessage(msg) {
   const list = document.getElementById('messages-list')
+  maybeInsertDateSeparator(list, msg)
+
   const side = msg.from_me ? 'from-me' : 'from-them'
   const div  = document.createElement('div')
   div.className = `msg-group ${side}`
@@ -1040,9 +1126,20 @@ function appendMessage(msg) {
        </button>`
     : ''
 
+  const replyBtn = `<button class="msg-reply-btn" title="Responder" data-msg-id="${esc(msg.id)}" data-body="${esc(msg.body)}" data-from-me="${msg.from_me ? 1 : 0}" onclick="startReply(this.dataset.msgId, this.dataset.body, this.dataset.fromMe === '1')">
+       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
+     </button>`
+
+  const quoteHtml = msg.quoted_id
+    ? `<div class="msg-quote" title="Ir para a mensagem citada" onclick="scrollToMessage('${esc(msg.quoted_id)}')">
+         <span class="msg-quote-author">${msg.quoted_from_me ? 'Você' : esc(state.activeConversation?.name || state.activeConversation?.phone || '')}</span>
+         <span class="msg-quote-text">${esc((msg.quoted_body || '').slice(0, 120))}</span>
+       </div>`
+    : ''
+
   div.innerHTML = `
-    <div class="msg-bubble">${renderMediaContent(msg)}</div>
-    <span class="msg-time">${editBtn}${editedTag}${formatTime(msg.timestamp)}${statusHtml}</span>
+    <div class="msg-bubble">${quoteHtml}${renderMediaContent(msg)}</div>
+    <span class="msg-time">${replyBtn}${editBtn}${editedTag}${formatTime(msg.timestamp)}${statusHtml}</span>
   `
   list.appendChild(div)
 }
@@ -1074,15 +1171,17 @@ async function sendMessage() {
   if (!text) return
 
   const btn = document.getElementById('send-btn')
+  const quotedId = state.replyingTo?.id || null
   btn.disabled = true
   input.value  = ''
   autoResize(input)
   hideQuickReplySuggest()
+  cancelReply()
 
   try {
     const res = await fetch(`/api/conversations/${encodeURIComponent(conv.id)}/messages`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...TENANT_HEADERS },
-      body: JSON.stringify({ body: text, session_id: conv.session_id }),
+      body: JSON.stringify({ body: text, session_id: conv.session_id, quoted_id: quotedId }),
     })
     if (!res.ok) {
       const e = await res.json().catch(() => ({}))
@@ -1105,6 +1204,7 @@ function onMsgKeydown(e) {
   }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
   if (e.key === 'Escape' && state.editingMessage) { cancelEditMessage() }
+  if (e.key === 'Escape' && state.replyingTo)     { cancelReply() }
 }
 
 /* ── Respostas rápidas (atalhos "/nome" que expandem pra texto pronto) ──
@@ -1476,6 +1576,13 @@ document.addEventListener('mouseup',    () => stopRecording())
 document.addEventListener('touchend',   () => stopRecording())
 document.addEventListener('touchcancel',() => stopRecording())
 
+// Mostra/esconde o botão "ir pro fim" conforme a posição do scroll
+document.getElementById('messages-list').addEventListener('scroll', () => {
+  const list = document.getElementById('messages-list')
+  const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 150
+  document.getElementById('scroll-bottom-btn').classList.toggle('hidden', nearBottom)
+})
+
 /* ── Pressionar e segurar numa mensagem → menu "Copiar" / "Editar" ──
    No celular não existe hover, então o toque longo é o jeito nativo de
    acessar ações da mensagem (igual WhatsApp de verdade). No desktop, o
@@ -1695,9 +1802,37 @@ document.addEventListener('click', e => {
 
 /* ── Helpers ──────────────────────────────────────────────── */
 
-function scrollToBottom() {
+function scrollToBottom(smooth = false) {
   const list = document.getElementById('messages-list')
-  list.scrollTop = list.scrollHeight
+  if (smooth) list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' })
+  else        list.scrollTop = list.scrollHeight
+  document.getElementById('scroll-bottom-btn').classList.add('hidden')
+}
+
+// Pula pra uma mensagem já renderizada (usado ao clicar numa citação) e pisca
+// a bolha pra ajudar a achar visualmente
+function scrollToMessage(msgId) {
+  const el = document.getElementById(`msg-${msgId}`)
+  if (!el) { showToast('Mensagem citada não está carregada aqui', 'info'); return }
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  const bubble = el.querySelector('.msg-bubble')
+  bubble.classList.remove('flash-highlight')
+  void bubble.offsetWidth   // força reflow pra reiniciar a animação se já rodou antes
+  bubble.classList.add('flash-highlight')
+}
+
+/* ── Responder citando mensagem ── */
+function startReply(msgId, body, fromMe) {
+  state.replyingTo = { id: msgId, body, fromMe: !!fromMe }
+  document.getElementById('reply-banner-author').textContent = fromMe ? 'Respondendo a você' : 'Respondendo'
+  document.getElementById('reply-banner-body').textContent   = body
+  document.getElementById('reply-banner').classList.remove('hidden')
+  document.getElementById('msg-input').focus()
+}
+
+function cancelReply() {
+  state.replyingTo = null
+  document.getElementById('reply-banner').classList.add('hidden')
 }
 
 function autoResize(el) {
