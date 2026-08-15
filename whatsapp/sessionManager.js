@@ -1210,12 +1210,14 @@ export class SessionManager {
     const sock = this.sockets.get(sessionId)
     if (!sock) return row?.profile_pic || null
 
-    // Monta a lista de JIDs a tentar, em ordem de confiabilidade:
-    //  1. o telefone REAL já salvo na conversa (mais confiável — o WhatsApp não
-    //     expõe foto pra @lid, só pro @s.whatsapp.net do número)
-    //  2. o LID→PN do mapa local do Baileys (se disponível)
-    //  3. o próprio jid como veio (caso já seja @s.whatsapp.net)
-    const candidatos = []
+    /* Ordem das tentativas — o JID ORIGINAL vem PRIMEIRO, e isso é decisivo.
+       Quem tem foto restrita a "meus contatos" só a libera com um token de
+       privacidade (tcToken), e o Baileys guarda esse token indexado pelo LID
+       (resolveTcTokenJid: se é LID usa direto; se é telefone tenta converter e,
+       sem o mapa, não acha o token). Consultando pelo telefone primeiro, a
+       consulta ia SEM token e o WhatsApp respondia "sem foto" — por isso só
+       aparecia a foto de quem tem privacidade aberta a todos. */
+    const candidatos = [jid]
     const digitos = String(row?.phone || '').replace(/\D/g, '')
     if (digitos.length >= 10) candidatos.push(`${digitos}@s.whatsapp.net`)
     if (jid?.endsWith('@lid')) {
@@ -1224,21 +1226,26 @@ export class SessionManager {
         if (pn && String(pn).endsWith('@s.whatsapp.net')) candidatos.push(pn)
       } catch (_) {}
     }
-    candidatos.push(jid)
-    // remove duplicados preservando ordem
-    const tentar = [...new Set(candidatos)]
+    const tentar = [...new Set(candidatos.filter(Boolean))]
 
+    /* profilePictureUrl NÃO lança erro quando não há foto — devolve undefined
+       (return child?.attrs?.url). O código antigo só tentava 'preview' dentro
+       do catch, então nunca chegava a testá-lo. 'preview' (miniatura) é o que o
+       próprio WhatsApp Web usa nas listas e costuma passar onde 'image' não
+       passa — agora tentamos os dois de verdade, em cada candidato. */
     let url = null
     const erros = []
     for (const alvo of tentar) {
-      try { url = await sock.profilePictureUrl(alvo, 'image'); if (url) { break } }
-      catch (e1) {
-        try { url = await sock.profilePictureUrl(alvo, 'preview'); if (url) { break } }
-        catch (e2) { erros.push(`${alvo}:${e2?.message || e1?.message}`) }
+      for (const tipo of ['preview', 'image']) {
+        try {
+          url = await sock.profilePictureUrl(alvo, tipo)
+          if (url) break
+        } catch (e) { erros.push(`${alvo}/${tipo}:${e?.message}`) }
       }
+      if (url) break
     }
 
-    console.log(`[pic] ${jid} | tentou=[${tentar.join(', ')}] | ${url ? 'FOTO OK' : 'sem foto (' + (erros.join(' | ') || 'todas retornaram vazio') + ')'}`)
+    console.log(`[pic] ${jid} | tentou=[${tentar.join(', ')}] | ${url ? 'FOTO OK' : 'sem foto (' + (erros.join(' | ') || 'sem foto configurada/privada') + ')'}`)
 
     // Cache no banco — só grava URL boa. NÃO grava '' pra permitir nova tentativa
     // numa próxima abertura (a foto pode aparecer depois que o WhatsApp sincroniza).
