@@ -143,6 +143,18 @@ socket.on('message:media', ({ msgId, sessionId, convId, mediaType, mediaUrl }) =
   bubble.innerHTML = renderMediaContent({ media_type: mediaType, media_url: mediaUrl, body: bubble.textContent.trim() })
 })
 
+/* Foto de perfil encontrada em segundo plano — atualiza a lista na hora,
+   sem precisar dar F5 nem reabrir a conversa. */
+socket.on('conversation:pic', ({ sessionId, convId, url }) => {
+  const conv = state.conversations.find(c => c.id === convId && c.session_id === sessionId)
+  if (!conv || !url) return
+  conv.profile_pic = url
+  renderConversations()
+  // se a conversa aberta é essa, atualiza o avatar do cabeçalho também
+  const ativa = state.activeConversation
+  if (ativa && ativa.id === convId && ativa.session_id === sessionId) loadProfilePic(ativa)
+})
+
 // Status das mensagens enviadas (✓ enviado, ✓✓ entregue, ✓✓ azul lido)
 socket.on('message:edited', ({ sessionId, convId, msgId, body }) => {
   const active = state.activeConversation

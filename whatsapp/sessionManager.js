@@ -741,6 +741,9 @@ export class SessionManager {
           // Cura conversas antigas que guardaram o LID no lugar do telefone real
           // (só leitura do mapa LOCAL do Baileys — sem rede, zero risco de ban).
           setTimeout(() => this._backfillLidPhones(sessionId, sock).catch(() => {}), 4000).unref?.()
+          // Fotos das conversas em segundo plano (devagar) — sem isso a lista
+          // só mostra as iniciais, porque a foto era buscada só ao abrir a conversa
+          setTimeout(() => this._backfillProfilePics(sessionId).catch(() => {}), 12000).unref?.()
         }
 
         if (connection === 'close') {
@@ -1247,14 +1250,14 @@ export class SessionManager {
 
     console.log(`[pic] ${jid} | tentou=[${tentar.join(', ')}] | ${url ? 'FOTO OK' : 'sem foto (' + (erros.join(' | ') || 'sem foto configurada/privada') + ')'}`)
 
-    // Cache no banco — só grava URL boa. NÃO grava '' pra permitir nova tentativa
-    // numa próxima abertura (a foto pode aparecer depois que o WhatsApp sincroniza).
-    if (url) {
-      try {
-        this.db.prepare('UPDATE conversations SET profile_pic = ? WHERE id=? AND session_id=?')
-          .run(url, jid, sessionId)
-      } catch (_) {}
-    }
+    /* Cache no banco. Grava '' quando não achou: marca "já tentei", evitando
+       repetir a consulta a cada abertura da conversa. O backfill que roda ao
+       conectar reconsidera essas ('' entra na busca dele), então quem colocar
+       foto depois acaba sendo capturado numa próxima conexão. */
+    try {
+      this.db.prepare('UPDATE conversations SET profile_pic = ? WHERE id=? AND session_id=?')
+        .run(url || '', jid, sessionId)
+    } catch (_) {}
 
     return url
   }
@@ -1465,6 +1468,46 @@ export class SessionManager {
       if (healed) console.log(`[lid] ${sessionId}: ${healed} telefone(s) de conversa corrigido(s)`)
     } catch (e) {
       console.error('[lid] backfill falhou (não-fatal):', e.message)
+    }
+  }
+
+  /* Busca as fotos de perfil das conversas em SEGUNDO PLANO.
+     Antes a foto só era buscada ao ABRIR a conversa — então a lista (que é
+     onde o atendente bate o olho) ficava sempre só com as iniciais.
+
+     Cuidados para não pesar nem parecer abuso ao WhatsApp:
+       • uma consulta por vez, com 1,5s de intervalo (bem mais lento que o
+         próprio WhatsApp Web, que puxa as fotos da lista de uma vez)
+       • no máximo 40 por rodada, das conversas MAIS RECENTES (as que importam)
+       • roda só depois de conectar, e para na hora se a sessão cair
+       • nada é baixado/armazenado: guardamos só o link, o navegador é quem
+         carrega a imagem direto do WhatsApp */
+  async _backfillProfilePics(sessionId) {
+    const PAUSA_MS = 1500
+    const LIMITE   = 40
+    try {
+      const rows = this.db.prepare(`
+        SELECT id FROM conversations
+        WHERE session_id = ? AND (profile_pic IS NULL OR profile_pic = '')
+        ORDER BY last_message_at DESC
+        LIMIT ?
+      `).all(sessionId, LIMITE)
+      if (!rows.length) return
+
+      let achadas = 0
+      for (const r of rows) {
+        if (!this.sockets.has(sessionId)) break   // sessão caiu no meio: aborta
+        const url = await this.getProfilePicture(sessionId, r.id).catch(() => null)
+        if (url) {
+          achadas++
+          // avisa a tela na hora — a foto aparece sem precisar dar F5
+          this._emit(sessionId, 'conversation:pic', { sessionId, convId: r.id, url })
+        }
+        await new Promise(res => setTimeout(res, PAUSA_MS))
+      }
+      console.log(`[pic] backfill ${sessionId}: ${achadas}/${rows.length} foto(s) encontradas`)
+    } catch (e) {
+      console.error('[pic] backfill falhou (não-fatal):', e.message)
     }
   }
 
