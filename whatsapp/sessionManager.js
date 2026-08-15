@@ -1248,11 +1248,15 @@ export class SessionManager {
        travou o preenchimento em segundo plano (ele registrava o início e nunca
        processava ninguém). Só 'preview' (miniatura): é o que o WhatsApp Web usa
        nas listas, basta pro avatar e é bem mais permissivo que 'image'. */
+    /* Timeout CURTO (3s): quando o WhatsApp responde, ele é rápido (a consulta
+       de diagnóstico volta em ~270ms). Quando não responde é porque não temos
+       o token de autorização daquele contato — e aí ele ignora o pedido em
+       silêncio, sem erro. Esperar 8s nesses casos só fazia a fila arrastar. */
     let url = null
     const erros = []
     for (const alvo of tentar) {
       try {
-        url = await sock.profilePictureUrl(alvo, 'preview', 8000)
+        url = await sock.profilePictureUrl(alvo, 'preview', 3000)
         if (url) break
       } catch (e) { erros.push(`${alvo}:${e?.message}`) }
     }
@@ -1517,36 +1521,29 @@ export class SessionManager {
       /* Diagnóstico: uma consulta de outro tipo (existe no WhatsApp?) usando o
          MESMO socket. Se esta responder e a de foto não, o problema é específico
          da consulta de foto — e não da conexão. */
+      /* PORTEIRO: uma consulta de outro tipo confirma que a conexão responde.
+         Se ela falhar, é a conexão que está ruim — aí sim adiar faz sentido.
+         Se responder, seguimos o lote inteiro: as falhas de foto não são
+         problema de conexão, são contatos sem token de autorização. */
       const sock0 = this.sockets.get(sessionId)
       try {
         const t0 = Date.now()
-        const r0 = await sock0.onWhatsApp('556190443888')
-        console.log(`[pic] diagnóstico: consulta comum respondeu em ${Date.now() - t0}ms (${r0?.length ?? 0} resultado)`)
+        await sock0.onWhatsApp('556190443888')
+        console.log(`[pic] conexão respondendo (${Date.now() - t0}ms) — buscando fotos`)
       } catch (e) {
-        console.log(`[pic] diagnóstico: consulta comum TAMBÉM falhou (${e?.message}) — conexão instável`)
+        console.log(`[pic] backfill ${sessionId}: conexão não responde (${e?.message}) — adiado 10min`)
+        setTimeout(() => this._backfillProfilePics(sessionId).catch(() => {}), 10 * 60 * 1000).unref?.()
+        return
       }
 
       let achadas = 0
-      let seguidasSemResposta = 0
       for (const r of rows) {
         if (!this.sockets.has(sessionId)) break   // sessão caiu no meio: aborta
         const url = await this.getProfilePicture(sessionId, r.id).catch(() => null)
         if (url) {
           achadas++
-          seguidasSemResposta = 0
           // avisa a tela na hora — a foto aparece sem precisar dar F5
           this._emit(sessionId, 'conversation:pic', { sessionId, convId: r.id, url })
-        } else {
-          seguidasSemResposta++
-          /* DISJUNTOR: se o WhatsApp não respondeu nas 5 primeiras seguidas, ele
-             não está atendendo esse tipo de consulta agora (acontece enquanto a
-             sessão ainda sincroniza). Parar e tentar mais tarde é melhor do que
-             insistir em 25 contatos — evita desperdício e não parece abuso. */
-          if (seguidasSemResposta >= 5 && achadas === 0) {
-            console.log(`[pic] backfill ${sessionId}: sem resposta do WhatsApp — adiado para daqui a 10min`)
-            setTimeout(() => this._backfillProfilePics(sessionId).catch(() => {}), 10 * 60 * 1000).unref?.()
-            return
-          }
         }
         await new Promise(res => setTimeout(res, PAUSA_MS))
       }
