@@ -1236,16 +1236,18 @@ export class SessionManager {
        do catch, então nunca chegava a testá-lo. 'preview' (miniatura) é o que o
        próprio WhatsApp Web usa nas listas e costuma passar onde 'image' não
        passa — agora tentamos os dois de verdade, em cada candidato. */
+    /* TIMEOUT EXPLÍCITO (8s): sem ele a consulta podia ficar pendurada
+       indefinidamente quando o servidor simplesmente não responde — foi o que
+       travou o preenchimento em segundo plano (ele registrava o início e nunca
+       processava ninguém). Só 'preview' (miniatura): é o que o WhatsApp Web usa
+       nas listas, basta pro avatar e é bem mais permissivo que 'image'. */
     let url = null
     const erros = []
     for (const alvo of tentar) {
-      for (const tipo of ['preview', 'image']) {
-        try {
-          url = await sock.profilePictureUrl(alvo, tipo)
-          if (url) break
-        } catch (e) { erros.push(`${alvo}/${tipo}:${e?.message}`) }
-      }
-      if (url) break
+      try {
+        url = await sock.profilePictureUrl(alvo, 'preview', 8000)
+        if (url) break
+      } catch (e) { erros.push(`${alvo}:${e?.message}`) }
     }
 
     console.log(`[pic] ${jid} | tentou=[${tentar.join(', ')}] | ${url ? 'FOTO OK' : 'sem foto (' + (erros.join(' | ') || 'sem foto configurada/privada') + ')'}`)
@@ -1483,8 +1485,8 @@ export class SessionManager {
        • nada é baixado/armazenado: guardamos só o link, o navegador é quem
          carrega a imagem direto do WhatsApp */
   async _backfillProfilePics(sessionId) {
-    const PAUSA_MS = 1500
-    const LIMITE   = 40
+    const PAUSA_MS = 1200
+    const LIMITE   = 25
     try {
       /* Pega: nunca buscada (NULL), sem foto na última tentativa ('') e também
          as VENCIDAS — os links do WhatsApp expiram, e uma URL velha salva fazia
