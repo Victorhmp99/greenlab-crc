@@ -79,6 +79,11 @@ export function initDB() {
     // e mensagens ficam preservadas no banco — se o mesmo número for reconectado
     // depois, o histórico é migrado automaticamente pra nova sessão.
     `ALTER TABLE sessions ADD COLUMN deleted_at TEXT`,
+    // Quando a foto foi buscada. Os links de foto do WhatsApp EXPIRAM — sem
+    // saber a idade, uma URL velha ficava salva pra sempre: o backfill pulava
+    // (afinal "já tem foto") e o navegador não conseguia carregar, caindo nas
+    // iniciais. Com a data, dá pra renovar as vencidas.
+    `ALTER TABLE conversations ADD COLUMN profile_pic_at TEXT`,
   ]) {
     try { db.exec(col) } catch (_) { /* coluna já existe */ }
   }

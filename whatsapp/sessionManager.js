@@ -1255,7 +1255,7 @@ export class SessionManager {
        conectar reconsidera essas ('' entra na busca dele), então quem colocar
        foto depois acaba sendo capturado numa próxima conexão. */
     try {
-      this.db.prepare('UPDATE conversations SET profile_pic = ? WHERE id=? AND session_id=?')
+      this.db.prepare("UPDATE conversations SET profile_pic = ?, profile_pic_at = datetime('now') WHERE id=? AND session_id=?")
         .run(url || '', jid, sessionId)
     } catch (_) {}
 
@@ -1486,12 +1486,23 @@ export class SessionManager {
     const PAUSA_MS = 1500
     const LIMITE   = 40
     try {
+      /* Pega: nunca buscada (NULL), sem foto na última tentativa ('') e também
+         as VENCIDAS — os links do WhatsApp expiram, e uma URL velha salva fazia
+         a conversa ser pulada aqui enquanto o navegador não conseguia carregar
+         a imagem (caindo nas iniciais). Renovamos a cada 12h. */
       const rows = this.db.prepare(`
         SELECT id FROM conversations
-        WHERE session_id = ? AND (profile_pic IS NULL OR profile_pic = '')
+        WHERE session_id = ?
+          AND ( profile_pic IS NULL
+             OR profile_pic = ''
+             OR profile_pic_at IS NULL
+             OR profile_pic_at < datetime('now','-12 hours') )
         ORDER BY last_message_at DESC
         LIMIT ?
       `).all(sessionId, LIMITE)
+
+      const total = this.db.prepare('SELECT COUNT(*) c FROM conversations WHERE session_id=?').get(sessionId)?.c ?? 0
+      console.log(`[pic] backfill ${sessionId}: ${rows.length} pendente(s) de ${total} conversa(s)`)
       if (!rows.length) return
 
       let achadas = 0
