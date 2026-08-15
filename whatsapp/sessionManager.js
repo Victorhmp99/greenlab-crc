@@ -1537,17 +1537,27 @@ export class SessionManager {
       }
 
       let achadas = 0
+      let tentadas = 0
       for (const r of rows) {
         if (!this.sockets.has(sessionId)) break   // sessão caiu no meio: aborta
+        tentadas++
         const url = await this.getProfilePicture(sessionId, r.id).catch(() => null)
         if (url) {
           achadas++
           // avisa a tela na hora — a foto aparece sem precisar dar F5
           this._emit(sessionId, 'conversation:pic', { sessionId, convId: r.id, url })
         }
+        /* Sem NENHUMA foto nas 10 primeiras: este número não tem autorização
+           pra ver foto dos contatos agora (o WhatsApp responde 'not-authorized'
+           ou nem responde). Parar aqui evita gastar consultas à toa — o resto
+           do lote quase certamente daria no mesmo. */
+        if (tentadas >= 10 && achadas === 0) {
+          console.log(`[pic] backfill ${sessionId}: WhatsApp não está liberando fotos deste número — parando (nova tentativa na próxima conexão)`)
+          return
+        }
         await new Promise(res => setTimeout(res, PAUSA_MS))
       }
-      console.log(`[pic] backfill ${sessionId}: ${achadas}/${rows.length} foto(s) encontradas`)
+      console.log(`[pic] backfill ${sessionId}: ${achadas}/${tentadas} foto(s) encontradas`)
     } catch (e) {
       console.error('[pic] backfill falhou (não-fatal):', e.message)
     }
