@@ -741,9 +741,13 @@ export class SessionManager {
           // Cura conversas antigas que guardaram o LID no lugar do telefone real
           // (só leitura do mapa LOCAL do Baileys — sem rede, zero risco de ban).
           setTimeout(() => this._backfillLidPhones(sessionId, sock).catch(() => {}), 4000).unref?.()
-          // Fotos das conversas em segundo plano (devagar) — sem isso a lista
-          // só mostra as iniciais, porque a foto era buscada só ao abrir a conversa
-          setTimeout(() => this._backfillProfilePics(sessionId).catch(() => {}), 12000).unref?.()
+          /* Fotos das conversas em segundo plano — sem isso a lista só mostra as
+             iniciais (a foto era buscada apenas ao ABRIR a conversa).
+             90s de espera: logo após conectar o WhatsApp está sincronizando e
+             simplesmente NÃO responde a consulta de foto (todas davam "Timed
+             Out" nos logs quando eu começava aos 12s). Depois da sincronização
+             ele responde — foi por isso que abrir a conversa na mão funcionava. */
+          setTimeout(() => this._backfillProfilePics(sessionId).catch(() => {}), 90000).unref?.()
         }
 
         if (connection === 'close') {
@@ -1226,7 +1230,10 @@ export class SessionManager {
     if (jid?.endsWith('@lid')) {
       try {
         const pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(jid)
-        if (pn && String(pn).endsWith('@s.whatsapp.net')) candidatos.push(pn)
+        // remove o sufixo de aparelho (:0) — vinha como candidato repetido nos
+        // logs e só gastava mais uma consulta pro mesmo número
+        const limpo = String(pn || '').replace(/:\d+@/, '@')
+        if (limpo.endsWith('@s.whatsapp.net')) candidatos.push(limpo)
       } catch (_) {}
     }
     const tentar = [...new Set(candidatos.filter(Boolean))]
@@ -1508,13 +1515,26 @@ export class SessionManager {
       if (!rows.length) return
 
       let achadas = 0
+      let seguidasSemResposta = 0
       for (const r of rows) {
         if (!this.sockets.has(sessionId)) break   // sessão caiu no meio: aborta
         const url = await this.getProfilePicture(sessionId, r.id).catch(() => null)
         if (url) {
           achadas++
+          seguidasSemResposta = 0
           // avisa a tela na hora — a foto aparece sem precisar dar F5
           this._emit(sessionId, 'conversation:pic', { sessionId, convId: r.id, url })
+        } else {
+          seguidasSemResposta++
+          /* DISJUNTOR: se o WhatsApp não respondeu nas 5 primeiras seguidas, ele
+             não está atendendo esse tipo de consulta agora (acontece enquanto a
+             sessão ainda sincroniza). Parar e tentar mais tarde é melhor do que
+             insistir em 25 contatos — evita desperdício e não parece abuso. */
+          if (seguidasSemResposta >= 5 && achadas === 0) {
+            console.log(`[pic] backfill ${sessionId}: sem resposta do WhatsApp — adiado para daqui a 10min`)
+            setTimeout(() => this._backfillProfilePics(sessionId).catch(() => {}), 10 * 60 * 1000).unref?.()
+            return
+          }
         }
         await new Promise(res => setTimeout(res, PAUSA_MS))
       }
