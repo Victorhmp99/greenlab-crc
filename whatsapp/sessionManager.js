@@ -1514,6 +1514,18 @@ export class SessionManager {
       console.log(`[pic] backfill ${sessionId}: ${rows.length} pendente(s) de ${total} conversa(s)`)
       if (!rows.length) return
 
+      /* Diagnóstico: uma consulta de outro tipo (existe no WhatsApp?) usando o
+         MESMO socket. Se esta responder e a de foto não, o problema é específico
+         da consulta de foto — e não da conexão. */
+      const sock0 = this.sockets.get(sessionId)
+      try {
+        const t0 = Date.now()
+        const r0 = await sock0.onWhatsApp('556190443888')
+        console.log(`[pic] diagnóstico: consulta comum respondeu em ${Date.now() - t0}ms (${r0?.length ?? 0} resultado)`)
+      } catch (e) {
+        console.log(`[pic] diagnóstico: consulta comum TAMBÉM falhou (${e?.message}) — conexão instável`)
+      }
+
       let achadas = 0
       let seguidasSemResposta = 0
       for (const r of rows) {
